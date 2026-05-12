@@ -7,22 +7,31 @@ import SignalPage from './pages/SignalPage'
 import NetworkPage from './pages/NetworkPage'
 import WiFiPage from './pages/WiFiPage'
 import RouterPage from './pages/RouterPage'
-import ToolsPage from './pages/ToolsPage'
 import BandLockPage from './pages/BandLockPage'
 import SettingsPage from './pages/SettingsPage'
 import MetricsPage from './pages/MetricsPage'
 import ModemPage from './pages/ModemPage'
 import AdvancedPage from './pages/AdvancedPage'
 
-export type Page = 'dashboard' | 'signal' | 'network' | 'wifi' | 'router' | 'modem' | 'tools' | 'bandlock' | 'metrics' | 'advanced' | 'settings'
+export type Page = 'dashboard' | 'signal' | 'network' | 'wifi' | 'router' | 'modem' | 'bandlock' | 'metrics' | 'advanced' | 'settings'
+type LoginMode = 'password' | 'pin'
+
+function isMobilePinClient() {
+  const ua = navigator.userAgent
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile/i.test(ua)
+    || (navigator.maxTouchPoints > 1 && /Macintosh/i.test(ua))
+}
 
 export default function App() {
   const [authed, setAuthed] = useState(hasToken())
   const [page, setPage] = useState<Page>('dashboard')
   const [loginErr, setLoginErr] = useState('')
   const [pw, setPw] = useState('')
+  const [pin, setPin] = useState('')
+  const [loginMode, setLoginMode] = useState<LoginMode>(() => isMobilePinClient() ? 'pin' : 'password')
   const [loading, setLoading] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const mobilePinClient = isMobilePinClient()
 
   useEffect(() => {
     document.body.style.overflow = sidebarOpen ? 'hidden' : ''
@@ -33,6 +42,8 @@ export default function App() {
     const handleAuthExpired = () => {
       setAuthed(false)
       setPw('')
+      setPin('')
+      setLoginMode(isMobilePinClient() ? 'pin' : 'password')
       setLoginErr('Session expired. Sign in again.')
     }
 
@@ -45,10 +56,11 @@ export default function App() {
     setLoading(true)
     setLoginErr('')
     try {
-      const { token } = await login(pw)
+      const { token } = await login(loginMode === 'pin' ? { pin } : { password: pw })
       setToken(token)
       setAuthed(true)
       setPw('')
+      setPin('')
     } catch (error) {
       setLoginErr(error instanceof Error ? error.message : 'Sign in failed')
     } finally {
@@ -60,6 +72,8 @@ export default function App() {
     clearToken()
     setAuthed(false)
     setPw('')
+    setPin('')
+    setLoginMode(isMobilePinClient() ? 'pin' : 'password')
   }
 
   if (!authed) {
@@ -76,22 +90,61 @@ export default function App() {
             <p className="mt-1 text-xs text-gray-500">Dashboard</p>
           </div>
           <form onSubmit={handleLogin} className="space-y-4">
-            <div>
-              <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1.5 block">Agent Password</label>
-              <input
-                type="password"
-                value={pw}
-                onChange={e => setPw(e.target.value)}
-                className="w-full px-3.5 py-3 bg-gray-50 border border-gray-200 rounded-xl text-base text-gray-900 placeholder-gray-400 focus:ring-0 focus:shadow-macos-focus focus:border-slds-blue outline-none transition-all"
-                placeholder="Enter your agent password"
-                autoFocus
-                autoComplete="current-password"
-              />
-            </div>
+            {mobilePinClient && (
+              <div className="grid grid-cols-2 gap-1 rounded-xl bg-gray-100 p-1">
+                {(['pin', 'password'] as const).map(mode => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => {
+                      setLoginMode(mode)
+                      setLoginErr('')
+                    }}
+                    className={`rounded-lg px-3 py-2 text-sm font-bold transition-all ${
+                      loginMode === mode ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-900'
+                    }`}
+                  >
+                    {mode === 'pin' ? 'PIN' : 'Password'}
+                  </button>
+                ))}
+              </div>
+            )}
+            {loginMode === 'pin' && mobilePinClient ? (
+              <div>
+                <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1.5 block">PIN</label>
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  maxLength={6}
+                  value={pin}
+                  onChange={e => setPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  className="w-full px-3.5 py-3 bg-gray-50 border border-gray-200 rounded-xl text-center text-2xl font-bold text-gray-900 placeholder-gray-400 focus:ring-0 focus:shadow-macos-focus focus:border-slds-blue outline-none transition-all"
+                  placeholder="••••••"
+                  autoFocus
+                  autoComplete="one-time-code"
+                  enterKeyHint="done"
+                  aria-label="PIN"
+                />
+              </div>
+            ) : (
+              <div>
+                <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1.5 block">Agent Password</label>
+                <input
+                  type="password"
+                  value={pw}
+                  onChange={e => setPw(e.target.value)}
+                  className="w-full px-3.5 py-3 bg-gray-50 border border-gray-200 rounded-xl text-base text-gray-900 placeholder-gray-400 focus:ring-0 focus:shadow-macos-focus focus:border-slds-blue outline-none transition-all"
+                  placeholder="Enter your agent password"
+                  autoFocus
+                  autoComplete="current-password"
+                />
+              </div>
+            )}
             {loginErr && <p className="text-xs text-red-500">{loginErr}</p>}
             <button
               type="submit"
-              disabled={loading || !pw}
+              disabled={loading || (loginMode === 'pin' && mobilePinClient ? pin.length !== 6 : !pw)}
               className="w-full bg-slds-blue text-white py-3.5 rounded-2xl font-bold shadow-sm hover:bg-slds-blueHover active:scale-[0.98] disabled:opacity-40 transition-all"
             >
               {loading ? 'Signing in\u2026' : 'Sign in'}
@@ -110,7 +163,6 @@ export default function App() {
     case 'wifi':      pageContent = <WiFiPage />; break
     case 'router':    pageContent = <RouterPage />; break
     case 'modem':     pageContent = <ModemPage />; break
-    case 'tools':     pageContent = <ToolsPage />; break
     case 'bandlock':  pageContent = <BandLockPage />; break
     case 'metrics':   pageContent = <MetricsPage />; break
     case 'advanced':  pageContent = <AdvancedPage />; break

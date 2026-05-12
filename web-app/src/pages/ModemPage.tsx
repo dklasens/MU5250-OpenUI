@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { api, formatBytes, type ApnProfile, type DataUsage } from '../api'
+import { api, formatBytes, type ApnProfile, type DataUsage, type UsagePeriod } from '../api'
 import Card from '../components/Card'
 
 function Input({ label, value, onChange, placeholder }: { label: string; value: string; onChange: (v: string) => void; placeholder?: string }) {
@@ -334,22 +334,93 @@ function TtlSection() {
 }
 
 // ── Data Usage ──────────────────────────────────────────────────────────────
+function formatUsagePeriod(secs?: number) {
+  if (!secs) return '\u2014'
+  const d = Math.floor(secs / 86400)
+  const h = Math.floor((secs % 86400) / 3600)
+  const m = Math.floor((secs % 3600) / 60)
+  return [d && `${d}d`, (d || h) && `${h}h`, `${m}m`].filter(Boolean).join(' ')
+}
+
+function clampResetDay(day: number, year: number, month: number) {
+  return Math.min(day, new Date(year, month + 1, 0).getDate())
+}
+
+function cycleWindow(resetDay: number, now = new Date()) {
+  const currentDay = clampResetDay(resetDay, now.getFullYear(), now.getMonth())
+  const startsThisMonth = now.getDate() >= currentDay
+  const startMonth = startsThisMonth ? now.getMonth() : now.getMonth() - 1
+  const startYear = now.getFullYear() + (startMonth < 0 ? -1 : 0)
+  const normalizedStartMonth = (startMonth + 12) % 12
+  const start = new Date(startYear, normalizedStartMonth, clampResetDay(resetDay, startYear, normalizedStartMonth))
+  const nextMonth = normalizedStartMonth + 1
+  const nextYear = startYear + (nextMonth > 11 ? 1 : 0)
+  const normalizedNextMonth = nextMonth % 12
+  const nextStart = new Date(nextYear, normalizedNextMonth, clampResetDay(resetDay, nextYear, normalizedNextMonth))
+  const end = new Date(nextStart)
+  end.setDate(end.getDate() - 1)
+  return { start, end, nextStart }
+}
+
+function formatDate(date: Date) {
+  return date.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
+function UsageTotals({ usage }: { usage: UsagePeriod }) {
+  const total = usage.rx_bytes + usage.tx_bytes
+  return (
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+      <div className="rounded-2xl border border-gray-200/60 bg-gray-50/60 p-4">
+        <p className="text-xs font-bold uppercase text-green-500">Download</p>
+        <p className="mt-1 text-2xl font-bold text-gray-900">{formatBytes(usage.rx_bytes)}</p>
+      </div>
+      <div className="rounded-2xl border border-gray-200/60 bg-gray-50/60 p-4">
+        <p className="text-xs font-bold uppercase text-slds-blue">Upload</p>
+        <p className="mt-1 text-2xl font-bold text-gray-900">{formatBytes(usage.tx_bytes)}</p>
+      </div>
+      <div className="rounded-2xl border border-gray-200/60 bg-gray-50/60 p-4">
+        <p className="text-xs font-bold uppercase text-gray-500">Total</p>
+        <p className="mt-1 text-2xl font-bold text-gray-900">{formatBytes(total)}</p>
+      </div>
+    </div>
+  )
+}
+
 function DataUsageSection() {
   const [usage, setUsage] = useState<DataUsage | null>(null)
-  const [limit, setLimit] = useState(() => {
-    try {
-      const s = localStorage.getItem('data_limit')
-      if (s) return JSON.parse(s) as { gb: number; resetDay: number }
-    } catch { /* corrupted data */ }
-    return { gb: 0, resetDay: 1 }
-  })
-  const [editingLimit, setEditingLimit] = useState(false)
-  const [limitGb, setLimitGb] = useState(String(limit.gb || ''))
-  const [resetDay, setResetDay] = useState(String(limit.resetDay))
+  const [editingResetDay, setEditingResetDay] = useState(false)
+  const [resetDay, setResetDay] = useState('1')
+  const [savingResetDay, setSavingResetDay] = useState(false)
+  const [msg, setMsg] = useState('')
 
   const fetchUsage = useCallback(async () => {
-    try { setUsage(await api.dataUsage()) } catch { /* ignore */ }
-  }, [])
+    try {
+      const next = await api.dataUsage()
+      setUsage(next)
+      if (!editingResetDay && next.reset_day) setResetDay(String(next.reset_day))
+    } catch { /* ignore */ }
+  }, [editingResetDay])
+
+  async function saveResetDay() {
+    const day = parseInt(resetDay, 10)
+    if (!day || day < 1 || day > 31) {
+      setMsg('Reset day must be between 1 and 31')
+      return
+    }
+    setSavingResetDay(true)
+    setMsg('')
+    try {
+      const next = await api.dataUsageResetDaySet(day)
+      setUsage(next)
+      setResetDay(String(next.reset_day ?? day))
+      setEditingResetDay(false)
+      setMsg(`Reset day set to day ${next.reset_day ?? day}`)
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : 'Failed to set reset day')
+    } finally {
+      setSavingResetDay(false)
+    }
+  }
 
   useEffect(() => {
     fetchUsage()
@@ -357,68 +428,86 @@ function DataUsageSection() {
     return () => clearInterval(id)
   }, [fetchUsage])
 
-  function saveLimit() {
-    const newLimit = { gb: parseFloat(limitGb) || 0, resetDay: parseInt(resetDay) || 1 }
-    setLimit(newLimit)
-    localStorage.setItem('data_limit', JSON.stringify(newLimit))
-    setEditingLimit(false)
-  }
-
-  const monthTotal = usage ? usage.month.rx_bytes + usage.month.tx_bytes : 0
-  const limitBytes = limit.gb * 1e9
-  const usagePct = limitBytes > 0 ? Math.min((monthTotal / limitBytes) * 100, 100) : 0
-
-  const periods = usage ? [
-    { label: 'Session (Today)', data: usage.day },
-    { label: 'Cycle (Month)', data: usage.month },
-    { label: 'Lifetime', data: usage.total },
+  const currentResetDay = usage?.reset_day ?? (parseInt(resetDay, 10) || 1)
+  const dates = cycleWindow(currentResetDay)
+  const cycle = usage?.cycle ?? usage?.month
+  const sincePowerOn = usage?.since_power_on
+  const rows = usage ? [
+    { label: 'Today', data: usage.day },
+    { label: 'Device lifetime', data: usage.total },
   ] : []
 
   return (
     <div className="space-y-4">
-      {/* Monthly limit bar */}
-      <Card title="Monthly Usage" action={
-        <button onClick={() => { setEditingLimit(true); setLimitGb(String(limit.gb || '')); setResetDay(String(limit.resetDay)) }}
-          className="text-xs text-slds-blue hover:text-slds-blue transition-colors">{limit.gb > 0 ? 'Edit Limit' : 'Set Limit'}</button>
+      <Card title="Current Data Cycle" action={
+        <button
+          onClick={() => {
+            setEditingResetDay(true)
+            setResetDay(String(currentResetDay))
+            setMsg('')
+          }}
+          className="text-xs text-slds-blue hover:text-slds-blue transition-colors"
+        >
+          Set Reset Day
+        </button>
       }>
-        {editingLimit && (
-          <div className="mb-3 flex flex-col sm:flex-row sm:flex-wrap sm:items-end gap-2 rounded-2xl bg-gray-50/50 p-3">
+        {editingResetDay && (
+          <div className="mb-4 flex flex-col gap-3 rounded-2xl bg-gray-50/60 p-3 sm:flex-row sm:items-end">
             <div>
-              <label className="mb-0.5 block text-xs text-gray-500">Data Limit (GB)</label>
-              <input type="number" value={limitGb} onChange={e => setLimitGb(e.target.value)} placeholder="e.g. 100"
-                className="w-full sm:w-24 px-3.5 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:ring-0 focus:shadow-macos-focus focus:border-slds-blue outline-none text-sm transition-all" />
-            </div>
-            <div>
-              <label className="mb-0.5 block text-xs text-gray-500">Reset Day</label>
-              <input type="number" min={1} max={28} value={resetDay} onChange={e => setResetDay(e.target.value)}
-                className="w-full sm:w-16 px-3.5 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:ring-0 focus:shadow-macos-focus focus:border-slds-blue outline-none text-sm transition-all" />
+              <label className="mb-0.5 block text-xs text-gray-500">Reset day of month</label>
+              <input
+                type="number"
+                min={1}
+                max={31}
+                value={resetDay}
+                onChange={e => setResetDay(e.target.value)}
+                className="w-full px-3.5 py-2.5 bg-white border border-gray-200 rounded-xl focus:ring-0 focus:shadow-macos-focus focus:border-slds-blue outline-none text-sm transition-all sm:w-28"
+              />
             </div>
             <div className="flex gap-2">
-              <button onClick={saveLimit} className="flex-1 sm:flex-none bg-slds-blue text-white py-1.5 rounded-2xl font-bold shadow-macos-lg shadow-slds-blue/20 hover:bg-slds-blue active:scale-[0.98] disabled:opacity-40 transition-all px-4 text-sm">Save</button>
-              <button onClick={() => setEditingLimit(false)} className="flex-1 sm:flex-none bg-white border border-gray-200 hover:bg-gray-50 px-3 py-1.5 rounded-xl font-bold text-gray-500 shadow-sm transition-all active:scale-95 text-sm">Cancel</button>
+              <button onClick={saveResetDay} disabled={savingResetDay}
+                className="flex-1 sm:flex-none bg-slds-blue text-white py-2.5 rounded-xl font-bold shadow-macos-lg shadow-slds-blue/20 hover:bg-slds-blue active:scale-[0.98] disabled:opacity-40 transition-all px-4 text-sm">
+                {savingResetDay ? 'Saving...' : 'Save'}
+              </button>
+              <button onClick={() => setEditingResetDay(false)} disabled={savingResetDay}
+                className="flex-1 sm:flex-none bg-white border border-gray-200 hover:bg-gray-50 px-3 py-2.5 rounded-xl font-bold text-gray-500 shadow-sm transition-all active:scale-95 text-sm disabled:opacity-40">
+                Cancel
+              </button>
             </div>
           </div>
         )}
+        {msg && <Alert msg={msg} type={msg.includes('Failed') || msg.includes('must') ? 'error' : 'success'} />}
 
-        {usage && limit.gb > 0 && (
-          <div className="mb-4">
-            <div className="mb-1 flex justify-between text-xs">
-              <span className="text-gray-500">{formatBytes(monthTotal)} / {limit.gb} GB</span>
-              <span className={usagePct > 90 ? 'text-red-500' : usagePct > 70 ? 'text-amber-500' : 'text-green-500'}>
-                {usagePct.toFixed(1)}%
-              </span>
+        {cycle ? (
+          <div className="space-y-4">
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-500">
+              <span>Reset day: <span className="font-bold text-gray-900">{currentResetDay}</span></span>
+              <span>Current period: <span className="font-bold text-gray-900">{formatDate(dates.start)} - {formatDate(dates.end)}</span></span>
+              <span>Next reset: <span className="font-bold text-gray-900">{formatDate(dates.nextStart)}</span></span>
             </div>
-            <div className="h-2 rounded-full bg-gray-50 overflow-hidden">
-              <div className="h-full rounded-full bg-slds-blue transition-all duration-500" style={{
-                width: `${usagePct}%`,
-              }} />
-            </div>
-            <p className="mt-1 text-xs text-gray-500">Resets on day {limit.resetDay} of each month</p>
+            <UsageTotals usage={cycle} />
+            <p className="text-xs text-gray-500">
+              These counters are maintained by the router and reset on the configured day of each month.
+            </p>
           </div>
+        ) : (
+          <p className="text-sm text-gray-500">Loading...</p>
         )}
+      </Card>
 
-        {/* Usage table */}
-        {usage ? (
+      <Card title="Data Since Power On">
+        {sincePowerOn ? (
+          <div className="space-y-3">
+            <UsageTotals usage={sincePowerOn} />
+            <p className="text-xs text-gray-500">Counter time: {formatUsagePeriod(sincePowerOn.time_secs)}</p>
+          </div>
+        ) : (
+          <p className="text-sm text-gray-500">Loading...</p>
+        )}
+      </Card>
+
+      {usage && (
+        <Card title="Other Counters">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -426,59 +515,23 @@ function DataUsageSection() {
                   <th className="pb-2 pr-4 font-medium">Period</th>
                   <th className="pb-2 pr-4 font-medium text-right">Download</th>
                   <th className="pb-2 pr-4 font-medium text-right">Upload</th>
-                  <th className="pb-2 font-medium text-right">Total</th>
+                  <th className="pb-2 pr-4 font-medium text-right">Total</th>
+                  <th className="pb-2 font-medium text-right">Time</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100/60">
-                {periods.map(({ label, data }) => (
+                {rows.map(({ label, data }) => (
                   <tr key={label}>
                     <td className="py-2 pr-4 text-gray-600">{label}</td>
                     <td className="py-2 pr-4 text-right text-green-500">{formatBytes(data.rx_bytes)}</td>
                     <td className="py-2 pr-4 text-right text-slds-blue">{formatBytes(data.tx_bytes)}</td>
-                    <td className="py-2 text-right font-medium text-gray-900">{formatBytes(data.rx_bytes + data.tx_bytes)}</td>
+                    <td className="py-2 pr-4 text-right font-medium text-gray-900">{formatBytes(data.rx_bytes + data.tx_bytes)}</td>
+                    <td className="py-2 text-right text-gray-500">{formatUsagePeriod(data.time_secs)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-        ) : (
-          <p className="text-sm text-gray-500">Loading...</p>
-        )}
-      </Card>
-
-      {/* Visual bars — separate download + upload */}
-      {usage && (
-        <Card title="Usage Breakdown">
-          {periods.map(({ label, data }) => {
-            const maxBytes = Math.max(...periods.map(p => Math.max(p.data.rx_bytes, p.data.tx_bytes)), 1)
-            const dlPct = Math.max((data.rx_bytes / maxBytes) * 100, 2)
-            const ulPct = Math.max((data.tx_bytes / maxBytes) * 100, 2)
-            return (
-              <div key={label} className="mb-4 last:mb-0">
-                <p className="mb-1.5 text-[9px] font-bold text-gray-500 uppercase tracking-widest">{label}</p>
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <span className="w-8 text-[10px] text-green-500">DL</span>
-                    <div className="flex-1 h-4 rounded bg-gray-50 overflow-hidden">
-                      <div className="h-full rounded bg-green-500 flex items-center px-1.5 text-[9px] font-medium text-white transition-all"
-                        style={{ width: `${dlPct}%`, minWidth: 'fit-content' }}>
-                        {formatBytes(data.rx_bytes)}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="w-8 text-[10px] text-slds-blue">UL</span>
-                    <div className="flex-1 h-4 rounded bg-gray-50 overflow-hidden">
-                      <div className="h-full rounded bg-slds-blue flex items-center px-1.5 text-[9px] font-medium text-white transition-all"
-                        style={{ width: `${ulPct}%`, minWidth: 'fit-content' }}>
-                        {formatBytes(data.tx_bytes)}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )
-          })}
         </Card>
       )}
     </div>

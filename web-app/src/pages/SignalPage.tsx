@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { api, type SignalInfo, type CarrierComponent } from '../api'
+import { api, formatBandwidthMHz, sumBandwidthMHz, type SignalInfo, type CarrierComponent } from '../api'
 import Card from '../components/Card'
 
 function rsrpColor(v?: number) {
@@ -34,14 +34,6 @@ function fmt(v?: number, unit = '') {
 function fmtFreq(mhz?: number) {
   if (mhz == null) return '\u2014'
   return `${mhz.toFixed(mhz % 1 === 0 ? 0 : 2)} MHz`
-}
-
-function parseBw(bw: string): number {
-  return parseInt(bw.replace(/[^\d]/g, '')) || 0
-}
-
-function sumBw(carriers: CarrierComponent[]): number {
-  return carriers.reduce((sum, c) => sum + parseBw(c.bandwidth), 0)
 }
 
 function Tooltip({ text, children }: { text: string; children: React.ReactNode }) {
@@ -256,8 +248,8 @@ export default function SignalPage() {
   const hasNR = current.nr_carriers.length > 0
   const hasLTE = current.lte_carriers.length > 0
   const totalCarriers = current.lte_carriers.length + current.nr_carriers.length
-  const nrBw = sumBw(current.nr_carriers)
-  const lteBw = sumBw(current.lte_carriers)
+  const nrBw = sumBandwidthMHz(current.nr_carriers)
+  const lteBw = sumBandwidthMHz(current.lte_carriers)
   const totalBw = nrBw + lteBw
 
   return (
@@ -292,9 +284,9 @@ export default function SignalPage() {
           </div>
           <div>
             <p className="text-[9px] font-bold text-gray-500 uppercase tracking-widest">Bandwidth</p>
-            <p className="text-sm font-bold text-gray-900">{totalBw} MHz</p>
+            <p className="text-sm font-bold text-gray-900">{formatBandwidthMHz(totalBw)}</p>
             <p className="text-[10px] text-gray-500">
-              {hasNR ? `NR ${nrBw}` : ''}{hasNR && hasLTE ? ' + ' : ''}{hasLTE ? `LTE ${lteBw}` : ''} MHz
+              {hasNR ? `NR ${formatBandwidthMHz(nrBw)}` : ''}{hasNR && hasLTE ? ' + ' : ''}{hasLTE ? `LTE ${formatBandwidthMHz(lteBw)}` : ''}
             </p>
           </div>
           <div>
@@ -326,7 +318,7 @@ export default function SignalPage() {
               {current.nr_carriers.length} carrier{current.nr_carriers.length !== 1 ? 's' : ''}
             </span>
             <span className="rounded-lg bg-purple-50 px-2 py-0.5 text-[9px] font-bold text-purple-600 border border-purple-200">
-              {nrBw} MHz
+              {formatBandwidthMHz(nrBw)}
             </span>
           </div>
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
@@ -346,7 +338,7 @@ export default function SignalPage() {
               {current.lte_carriers.length > 1 ? ' (CA)' : ''}
             </span>
             <span className="rounded-lg bg-slds-blue/10 px-2 py-0.5 text-[9px] font-bold text-slds-blue border border-slds-blue/30">
-              {lteBw} MHz
+              {formatBandwidthMHz(lteBw)}
             </span>
           </div>
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">

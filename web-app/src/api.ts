@@ -76,8 +76,9 @@ const post = (path: string, body?: unknown, extraHeaders?: Record<string, string
 const put  = (path: string, body: unknown) => req('PUT', path, body)
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
-export async function login(password: string): Promise<{ token: string }> {
-  const data = await req('POST', '/api/auth/login', { password })
+export async function login(credentials: string | { password?: string; pin?: string }): Promise<{ token: string }> {
+  const body = typeof credentials === 'string' ? { password: credentials } : credentials
+  const data = await req('POST', '/api/auth/login', body)
   return { token: data.token }
 }
 
@@ -192,7 +193,17 @@ export interface ApnProfile {
   pdpType: number; pppAuthMode: number; profileId: string; isEnable: boolean
 }
 export interface SimInfo { iccid?: string; imsi?: string; state?: string; mcc?: string; mnc?: string }
-export interface DataUsage { day: UsagePeriod; month: UsagePeriod; total: UsagePeriod }
+export interface DataUsage {
+  day: UsagePeriod
+  month: UsagePeriod
+  cycle?: UsagePeriod
+  since_power_on?: UsagePeriod
+  total: UsagePeriod
+  reset_day?: number
+  reset_enabled?: boolean
+  clear_date_record?: string
+  next_clear_date?: string
+}
 export interface UsagePeriod { rx_bytes: number; tx_bytes: number; time_secs: number }
 export interface SmsMessage { id: number; from?: string; text?: string; date?: string; read?: boolean }
 export interface SmsCapacity { inbox: number; total: number; unread: number }
@@ -679,12 +690,20 @@ function mapSim(d: Record<string, unknown>): SimInfo {
 
 function mapDataUsage(d: Record<string, unknown>): DataUsage {
   const p = (v: Record<string, unknown>): UsagePeriod => ({
-    rx_bytes: v.rx_bytes as number, tx_bytes: v.tx_bytes as number, time_secs: v.time_secs as number,
+    rx_bytes: Number(v.rx_bytes ?? 0), tx_bytes: Number(v.tx_bytes ?? 0), time_secs: Number(v.time_secs ?? 0),
   })
+  const cycle = d.cycle as Record<string, unknown> | undefined
+  const sincePowerOn = d.since_power_on as Record<string, unknown> | undefined
   return {
     day: p(d.day as Record<string, unknown>),
     month: p(d.month as Record<string, unknown>),
+    cycle: cycle ? p(cycle) : undefined,
+    since_power_on: sincePowerOn ? p(sincePowerOn) : undefined,
     total: p(d.total as Record<string, unknown>),
+    reset_day: d.reset_day != null ? Number(d.reset_day) : undefined,
+    reset_enabled: d.reset_enabled === true || Number(d.reset_enabled) === 1,
+    clear_date_record: d.clear_date_record as string | undefined,
+    next_clear_date: d.next_clear_date as string | undefined,
   }
 }
 
@@ -718,6 +737,7 @@ export const api = {
   cpu:     () => get('/api/cpu').then(mapCpu),
   memory:  () => get('/api/memory').then(mapMemory),
   reboot:  () => post('/api/device/reboot', undefined, { 'X-Confirm': 'true' }),
+  shutdown: () => post('/api/device/shutdown', undefined, { 'X-Confirm': 'true' }),
 
   // Network
   signal:   () => get('/api/network/signal').then(mapSignal),
@@ -726,6 +746,7 @@ export const api = {
   wan6:     () => get('/api/network/wan6').then(mapWan6),
   clients:  () => get('/api/network/clients').then(mapClients),
   dataUsage: () => get('/api/data-usage').then(mapDataUsage),
+  dataUsageResetDaySet: (reset_day: number) => put('/api/data-usage/reset-day', { reset_day }).then(mapDataUsage),
 
   // Modem
   simInfo:  () => get('/api/sim/info').then(mapSim),
@@ -834,4 +855,19 @@ export function formatSpeed(bps: number): string {
   if (mbps >= 1) return `${mbps.toFixed(1)} Mbps`
   const kbps = bps * 8 / 1000
   return `${kbps.toFixed(0)} Kbps`
+}
+
+export function parseBandwidthMHz(bandwidth?: string): number {
+  if (!bandwidth || bandwidth === '\u2014') return 0
+  const match = bandwidth.match(/\d+(?:\.\d+)?/)
+  return match ? parseFloat(match[0]) : 0
+}
+
+export function sumBandwidthMHz(carriers: { bandwidth?: string }[]): number {
+  return carriers.reduce((sum, carrier) => sum + parseBandwidthMHz(carrier.bandwidth), 0)
+}
+
+export function formatBandwidthMHz(mhz: number): string {
+  if (mhz <= 0) return '\u2014'
+  return `${Number.isInteger(mhz) ? mhz.toFixed(0) : mhz.toFixed(1)} MHz`
 }

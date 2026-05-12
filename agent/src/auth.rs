@@ -16,6 +16,7 @@ const LOGIN_LOCKOUT_SECS: u64 = 30;
 
 pub struct AuthState {
     password_hash: Mutex<Option<String>>,
+    pin_hash: Mutex<Option<String>>,
     salt: Mutex<Vec<u8>>,
     tokens: Mutex<Vec<Token>>,
     failed_logins: Mutex<HashMap<String, LoginAttempt>>,
@@ -36,6 +37,7 @@ impl AuthState {
         let salt = load_or_create_salt();
         Self {
             password_hash: Mutex::new(None),
+            pin_hash: Mutex::new(None),
             salt: Mutex::new(salt),
             tokens: Mutex::new(Vec::new()),
             failed_logins: Mutex::new(HashMap::new()),
@@ -48,11 +50,36 @@ impl AuthState {
         *self.password_hash.safe_lock() = Some(hash);
     }
 
+    pub fn set_pin(&self, pin: &str) -> Result<(), String> {
+        validate_pin(pin)?;
+        let salt = self.salt.safe_lock();
+        let hash = iterated_hash(&salt, pin);
+        *self.pin_hash.safe_lock() = Some(hash);
+        Ok(())
+    }
+
     pub fn has_password(&self) -> bool {
         self.password_hash.safe_lock().is_some()
     }
 
-    pub fn login(&self, password: &str, client_ip: &str) -> LoginResult {
+    pub fn login_password(&self, password: &str, client_ip: &str) -> LoginResult {
+        self.login_against(password, &self.password_hash, client_ip)
+    }
+
+    pub fn login_pin(&self, pin: &str, client_ip: &str) -> LoginResult {
+        if validate_pin(pin).is_err() {
+            self.record_failed_login(client_ip, epoch_secs());
+            return LoginResult::Invalid;
+        }
+        self.login_against(pin, &self.pin_hash, client_ip)
+    }
+
+    fn login_against(
+        &self,
+        credential: &str,
+        stored_hash: &Mutex<Option<String>>,
+        client_ip: &str,
+    ) -> LoginResult {
         let now = epoch_secs();
 
         {
@@ -70,22 +97,12 @@ impl AuthState {
         }
 
         let salt = self.salt.safe_lock();
-        let hash = iterated_hash(&salt, password);
-        let stored = self.password_hash.safe_lock();
+        let hash = iterated_hash(&salt, credential);
+        let stored = stored_hash.safe_lock();
         if stored.as_deref() != Some(&hash) {
             drop(stored);
             drop(salt);
-            let mut attempts = self.failed_logins.safe_lock();
-            let entry = attempts
-                .entry(client_ip.to_string())
-                .or_insert(LoginAttempt {
-                    count: 0,
-                    locked_until: 0,
-                });
-            entry.count += 1;
-            if entry.count >= MAX_LOGIN_ATTEMPTS {
-                entry.locked_until = now + LOGIN_LOCKOUT_SECS;
-            }
+            self.record_failed_login(client_ip, now);
             return LoginResult::Invalid;
         }
         drop(stored);
@@ -124,6 +141,20 @@ impl AuthState {
         LoginResult::Ok { token }
     }
 
+    fn record_failed_login(&self, client_ip: &str, now: u64) {
+        let mut attempts = self.failed_logins.safe_lock();
+        let entry = attempts
+            .entry(client_ip.to_string())
+            .or_insert(LoginAttempt {
+                count: 0,
+                locked_until: 0,
+            });
+        entry.count += 1;
+        if entry.count >= MAX_LOGIN_ATTEMPTS {
+            entry.locked_until = now + LOGIN_LOCKOUT_SECS;
+        }
+    }
+
     pub fn validate(&self, token: &str) -> bool {
         let now = epoch_secs();
         let mut tokens = self.tokens.safe_lock();
@@ -136,6 +167,13 @@ pub enum LoginResult {
     Ok { token: String },
     Invalid,
     Locked { retry_after_secs: u64 },
+}
+
+fn validate_pin(pin: &str) -> Result<(), String> {
+    if pin.len() != 6 || !pin.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("PIN must be exactly 6 digits".into());
+    }
+    Ok(())
 }
 
 fn iterated_hash(salt: &[u8], password: &str) -> String {

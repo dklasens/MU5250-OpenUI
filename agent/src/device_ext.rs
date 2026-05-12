@@ -122,6 +122,17 @@ pub fn device_reboot(_state: &AppState) -> (u16, Value) {
     }
 }
 
+pub fn device_shutdown(_state: &AppState) -> (u16, Value) {
+    match ubus::call(
+        "zwrt_mc.device.manager",
+        "device_poweroff",
+        Some(r#"{"moduleName":"zte-agent"}"#),
+    ) {
+        Ok(data) => (200, json!({"ok": true, "data": data})),
+        Err(e) => (503, json!({"ok": false, "error": e})),
+    }
+}
+
 pub fn agent_restart(_state: &AppState) -> (u16, Value) {
     // Spawn a detached process that waits, then kills and restarts the agent.
     // We respond first so the client gets a 200 before we die.

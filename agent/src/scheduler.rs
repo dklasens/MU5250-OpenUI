@@ -128,6 +128,7 @@ fn validate_job(
         action.path.as_str(),
         "/api/device/factory-reset"
             | "/api/device/reboot"
+            | "/api/device/shutdown"
             | "/api/system/kill-bloat"
             | "/api/system/restart-agent"
             | "/api/at/send"
@@ -270,7 +271,7 @@ impl Scheduler {
             .filter_map(|pa| {
                 let method = parse_method(&pa.method)?;
                 let (status, resp) =
-                    crate::server::route(&method, &pa.path, state, &pa.body, "127.0.0.1");
+                    crate::server::route(&method, &pa.path, state, &pa.body, "127.0.0.1", None);
                 let error = if status >= 400 {
                     resp.get("error")
                         .and_then(|e| e.as_str())

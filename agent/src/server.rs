@@ -55,7 +55,11 @@ pub fn start(bind: &str, threads: usize, state: Arc<AppState>) {
     }
 }
 
-const DESTRUCTIVE_PATHS: &[&str] = &["/api/device/factory-reset", "/api/device/reboot"];
+const DESTRUCTIVE_PATHS: &[&str] = &[
+    "/api/device/factory-reset",
+    "/api/device/reboot",
+    "/api/device/shutdown",
+];
 
 fn cors_headers(origin: Option<&str>) -> Vec<Header> {
     let allowed = origin
@@ -113,6 +117,12 @@ fn handle_request(mut request: Request, state: &AppState) {
         .remote_addr()
         .map(|a| a.ip().to_string())
         .unwrap_or_default();
+    let user_agent = request
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv("User-Agent"))
+        .map(|h| h.value.as_str().to_string());
+    let user_agent_ref = user_agent.as_deref();
 
     if method == Method::Options {
         let mut response = Response::empty(200);
@@ -196,7 +206,7 @@ fn handle_request(mut request: Request, state: &AppState) {
         return;
     }
 
-    let (status, body_json) = route(&method, &path, state, &body, &client_ip);
+    let (status, body_json) = route(&method, &path, state, &body, &client_ip, user_agent_ref);
     respond(request, status, body_json, origin_ref);
 }
 
@@ -217,10 +227,11 @@ pub fn route(
     state: &AppState,
     body: &[u8],
     client_ip: &str,
+    user_agent: Option<&str>,
 ) -> (u16, Value) {
     match (method, path) {
         // Auth
-        (&Method::Post, "/api/auth/login") => handlers::login(state, body, client_ip),
+        (&Method::Post, "/api/auth/login") => handlers::login(state, body, client_ip, user_agent),
         // Batch
         (&Method::Get, "/api/dashboard") => handlers::dashboard(state),
         // Device info (sysfs)
@@ -246,6 +257,7 @@ pub fn route(
         (&Method::Get, "/api/device/charger") => device_ext::device_charger(state),
         (&Method::Get, "/api/device/system") => device_ext::device_system(state),
         (&Method::Post, "/api/device/reboot") => device_ext::device_reboot(state),
+        (&Method::Post, "/api/device/shutdown") => device_ext::device_shutdown(state),
         (&Method::Post, "/api/device/factory-reset") => device_ext::device_factory_reset(state),
         (&Method::Post, "/api/device/power-save") => device_ext::device_power_save_get(state, body),
         (&Method::Put, "/api/device/power-save") => device_ext::device_power_save_set(state, body),
@@ -262,6 +274,9 @@ pub fn route(
         (&Method::Put, "/api/wifi/guest") => wifi::guest_set(state, body),
         // Modem
         (&Method::Get, "/api/data-usage") => handlers::data_usage(state),
+        (&Method::Put, "/api/data-usage/reset-day") => {
+            handlers::data_usage_reset_day_set(state, body)
+        }
         (&Method::Get, "/api/modem/status") => handlers::modem_status(state),
         (&Method::Post, "/api/modem/online") => handlers::modem_online(state),
         (&Method::Get, "/api/modem/data") => modem_ext::modem_data_get(state),

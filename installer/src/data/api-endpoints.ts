@@ -22,9 +22,9 @@ export const apiCategories: APICategory[] = [
   },
   {
     name: "Device",
-    count: 14,
+    count: 15,
     capabilities:
-      "System info, battery, CPU, memory, thermal, charger, reboot, factory reset, power save, fast boot",
+      "System info, battery, CPU, memory, thermal, charger, reboot, shutdown, factory reset, power save, fast boot",
     endpoints: [
       { method: "GET", path: "/api/device", description: "System information (sysfs)" },
       { method: "GET", path: "/api/battery", description: "Battery status and percentage" },
@@ -35,6 +35,7 @@ export const apiCategories: APICategory[] = [
       { method: "GET", path: "/api/device/charger", description: "Charger status" },
       { method: "GET", path: "/api/device/system", description: "System details (ubus)" },
       { method: "POST", path: "/api/device/reboot", description: "Reboot device" },
+      { method: "POST", path: "/api/device/shutdown", description: "Shut down device" },
       { method: "POST", path: "/api/device/factory-reset", description: "Factory reset" },
       { method: "POST", path: "/api/device/power-save", description: "Power save mode status" },
       { method: "PUT", path: "/api/device/power-save", description: "Toggle power save" },
@@ -61,11 +62,12 @@ export const apiCategories: APICategory[] = [
   },
   {
     name: "Modem",
-    count: 12,
+    count: 13,
     capabilities:
-      "Airplane mode, mobile data toggle, network mode (2G–5G), operator scan, manual registration",
+      "Airplane mode, mobile data toggle, data usage reset day, network mode (2G–5G), operator scan, manual registration",
     endpoints: [
       { method: "GET", path: "/api/data-usage", description: "Data usage statistics" },
+      { method: "PUT", path: "/api/data-usage/reset-day", description: "Set data usage reset day" },
       { method: "GET", path: "/api/modem/status", description: "Modem status" },
       { method: "POST", path: "/api/modem/online", description: "Go online/offline" },
       { method: "GET", path: "/api/modem/data", description: "Mobile data status" },

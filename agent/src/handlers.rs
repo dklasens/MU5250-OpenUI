@@ -43,29 +43,64 @@ impl AppState {
     }
 }
 
-/// POST /api/auth/login — body: {"password": "..."}
-pub fn login(state: &AppState, body: &[u8], client_ip: &str) -> (u16, Value) {
+/// POST /api/auth/login — body: {"password": "..."} or {"pin": "..."}
+pub fn login(
+    state: &AppState,
+    body: &[u8],
+    client_ip: &str,
+    user_agent: Option<&str>,
+) -> (u16, Value) {
     let parsed: Value = match serde_json::from_slice(body) {
         Ok(v) => v,
         Err(_) => return (400, json!({"ok": false, "error": "invalid JSON"})),
     };
-    let password = match parsed["password"].as_str() {
-        Some(p) => p,
-        None => {
+
+    let password = parsed["password"].as_str();
+    let pin = parsed["pin"].as_str();
+    if password.is_some() && pin.is_some() {
+        return (
+            400,
+            json!({"ok": false, "error": "provide either password or pin"}),
+        );
+    }
+
+    let result = if let Some(password) = password {
+        state.auth.login_password(password, client_ip)
+    } else if let Some(pin) = pin {
+        if !is_mobile_user_agent(user_agent.unwrap_or_default()) {
             return (
-                400,
-                json!({"ok": false, "error": "missing 'password' field"}),
-            )
+                403,
+                json!({"ok": false, "error": "PIN login is only available from mobile devices"}),
+            );
         }
+        state.auth.login_pin(pin, client_ip)
+    } else {
+        return (
+            400,
+            json!({"ok": false, "error": "missing 'password' or 'pin' field"}),
+        );
     };
-    match state.auth.login(password, client_ip) {
+
+    match result {
         auth::LoginResult::Ok { token } => (200, json!({"ok": true, "data": {"token": token}})),
-        auth::LoginResult::Invalid => (401, json!({"ok": false, "error": "invalid password"})),
+        auth::LoginResult::Invalid => (401, json!({"ok": false, "error": "invalid credentials"})),
         auth::LoginResult::Locked { retry_after_secs } => (
             429,
             json!({"ok": false, "error": format!("too many attempts, retry in {retry_after_secs}s")}),
         ),
     }
+}
+
+fn is_mobile_user_agent(user_agent: &str) -> bool {
+    let ua = user_agent.to_ascii_lowercase();
+    ua.contains("mobile")
+        || ua.contains("android")
+        || ua.contains("iphone")
+        || ua.contains("ipad")
+        || ua.contains("ipod")
+        || ua.contains("blackberry")
+        || ua.contains("iemobile")
+        || ua.contains("opera mini")
 }
 
 /// GET /api/device
@@ -140,15 +175,69 @@ pub fn modem_status(_state: &AppState) -> (u16, Value) {
 
 /// GET /api/data-usage
 pub fn data_usage(_state: &AppState) -> (u16, Value) {
+    match read_data_usage_live() {
+        Ok(data) => (200, json!({"ok": true, "data": data})),
+        Err(e) => (503, json!({"ok": false, "error": e})),
+    }
+}
+
+/// PUT /api/data-usage/reset-day
+pub fn data_usage_reset_day_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
+    let parsed: Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(_) => return (400, json!({"ok": false, "error": "invalid JSON"})),
+    };
+    let day = parsed["reset_day"]
+        .as_u64()
+        .or_else(|| parsed["clearday"].as_u64())
+        .unwrap_or(0);
+    if !(1..=31).contains(&day) {
+        return (
+            400,
+            json!({"ok": false, "error": "reset_day must be between 1 and 31"}),
+        );
+    }
+
+    let params = json!({
+        "source_module": "web",
+        "cid": 1,
+        "type": 4,
+        "enable": 1,
+        "clearday": day,
+    });
+
+    match ubus::call(
+        "zwrt_data",
+        "set_wwandst_clearday",
+        Some(&params.to_string()),
+    ) {
+        Ok(_) => match read_data_usage_live() {
+            Ok(data) => (200, json!({"ok": true, "data": data})),
+            Err(e) => (503, json!({"ok": false, "error": e})),
+        },
+        Err(e) => (503, json!({"ok": false, "error": e})),
+    }
+}
+
+fn read_data_usage_live() -> Result<Value, String> {
+    let stats = ubus::call(
+        "zwrt_data",
+        "get_wwandst",
+        Some(r#"{"source_module":"web","cid":1,"type":4}"#),
+    )?;
+    let clear = ubus::call(
+        "zwrt_data",
+        "get_wwandst_clearday",
+        Some(r#"{"source_module":"web","cid":1,"type":4}"#),
+    )
+    .unwrap_or_else(|_| json!({}));
+
     let section = "zwrt_data_commit.wwancid1dst";
 
-    let read_period = |prefix: &str| -> Value {
+    let read_stat_period = |prefix: &str| -> Value {
         let get = |suffix: &str| -> Value {
-            let key = format!("{section}.{prefix}_{suffix}");
-            match ubus::uci_get(&key) {
-                Ok(v) => v.parse::<u64>().map(Value::from).unwrap_or(Value::from(v)),
-                Err(_) => Value::Null,
-            }
+            let key = format!("{prefix}_{suffix}");
+            number_value(stats.get(&key)).unwrap_or(Value::Null)
         };
         json!({
             "tx_bytes": get("tx_bytes"),
@@ -159,17 +248,40 @@ pub fn data_usage(_state: &AppState) -> (u16, Value) {
         })
     };
 
-    (
-        200,
-        json!({
-            "ok": true,
-            "data": {
-                "day": read_period("day"),
-                "month": read_period("month"),
-                "total": read_period("total"),
-            }
-        }),
-    )
+    let reset_day = number_value(clear.get("clearday")).unwrap_or_else(|| {
+        ubus::uci_get(&format!("{section}.clearday"))
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(Value::from)
+            .unwrap_or(Value::from(1))
+    });
+    let reset_enabled = number_value(clear.get("enable")).unwrap_or_else(|| {
+        ubus::uci_get(&format!("{section}.clearday_enable"))
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(Value::from)
+            .unwrap_or(Value::from(0))
+    });
+
+    Ok(json!({
+        "day": read_stat_period("day"),
+        "month": read_stat_period("month"),
+        "cycle": read_stat_period("month"),
+        "since_power_on": read_stat_period("real"),
+        "total": read_stat_period("total"),
+        "reset_day": reset_day,
+        "reset_enabled": reset_enabled,
+        "clear_date_record": ubus::uci_get(&format!("{section}.clear_date_record")).ok(),
+        "next_clear_date": ubus::uci_get(&format!("{section}.clearday_date")).ok(),
+    }))
+}
+
+fn number_value(value: Option<&Value>) -> Option<Value> {
+    match value? {
+        Value::Number(n) => Some(Value::Number(n.clone())),
+        Value::String(s) => s.parse::<u64>().ok().map(Value::from),
+        _ => None,
+    }
 }
 
 /// POST /api/modem/online
@@ -250,26 +362,5 @@ pub fn dashboard(state: &AppState) -> (u16, Value) {
 }
 
 fn read_data_usage() -> Value {
-    let section = "zwrt_data_commit.wwancid1dst";
-    let read_period = |prefix: &str| -> Value {
-        let get = |suffix: &str| -> Value {
-            let key = format!("{section}.{prefix}_{suffix}");
-            match ubus::uci_get(&key) {
-                Ok(v) => v.parse::<u64>().map(Value::from).unwrap_or(Value::from(v)),
-                Err(_) => Value::Null,
-            }
-        };
-        json!({
-            "tx_bytes": get("tx_bytes"),
-            "rx_bytes": get("rx_bytes"),
-            "time_secs": get("time"),
-            "tx_packets": get("tx_packets"),
-            "rx_packets": get("rx_packets"),
-        })
-    };
-    json!({
-        "day": read_period("day"),
-        "month": read_period("month"),
-        "total": read_period("total"),
-    })
+    read_data_usage_live().unwrap_or_else(|e| json!({"error": e}))
 }

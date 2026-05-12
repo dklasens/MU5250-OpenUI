@@ -61,6 +61,24 @@ fn main() {
         }
     }
 
+    if let Ok(pin) = std::env::var("ZTE_AGENT_PIN") {
+        if let Err(e) = state.auth.set_pin(&pin) {
+            eprintln!("[WARN] ignoring invalid ZTE_AGENT_PIN: {e}");
+        }
+    } else if let Ok(script) = std::fs::read_to_string("/data/local/tmp/start_zte_agent.sh") {
+        for line in script.lines() {
+            if line.starts_with("export ZTE_AGENT_PIN=") {
+                let pin = line
+                    .trim_start_matches("export ZTE_AGENT_PIN=")
+                    .trim_matches(|c| c == '\'' || c == '"');
+                if let Err(e) = state.auth.set_pin(pin) {
+                    eprintln!("[WARN] ignoring invalid ZTE_AGENT_PIN: {e}");
+                }
+                break;
+            }
+        }
+    }
+
     // Event bus: single `ubus listen` process dispatches to subscribers
     let event_bus = EventBus::new();
     let sms_rx = event_bus.subscribe("zwrt_wms_status_event");

@@ -27,6 +27,7 @@ This README focuses on two things:
 - The bind address can be overridden with `ZTE_AGENT_BIND`.
 - Worker count can be overridden with `ZTE_AGENT_THREADS`.
 - The API password is loaded from `ZTE_AGENT_PASSWORD` or from `/data/local/tmp/start_zte_agent.sh`.
+- An optional 6 digit dashboard PIN can be loaded from `ZTE_AGENT_PIN` or from `/data/local/tmp/start_zte_agent.sh`.
 - On startup the agent also:
   - starts the DoH proxy subsystem
   - starts the scheduler
@@ -39,6 +40,7 @@ This README focuses on two things:
 ### Authentication and safety
 
 - `POST /api/auth/login` is the only unauthenticated endpoint.
+- Login accepts either the agent password or, from mobile user agents only, the configured dashboard PIN.
 - All other endpoints require `Authorization: Bearer <token>`.
 - Tokens are in-memory session tokens with a 1 hour TTL.
 - Up to 10 tokens are retained at once.
@@ -46,6 +48,7 @@ This README focuses on two things:
 - CORS is only opened for LAN-style origins (`localhost`, `127.0.0.1`, `::1`, `10.x.x.x`, `172.16-31.x.x`, `192.168.x.x`).
 - Destructive endpoints currently require `X-Confirm: true`:
   - `POST /api/device/reboot`
+  - `POST /api/device/shutdown`
   - `POST /api/device/factory-reset`
 
 ### Response shape
@@ -68,6 +71,15 @@ or:
 curl -sS http://192.168.0.1:9090/api/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"password":"your-agent-password"}'
+```
+
+Optional mobile PIN login:
+
+```bash
+curl -sS http://192.168.0.1:9090/api/auth/login \
+  -A 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148' \
+  -H 'Content-Type: application/json' \
+  -d '{"pin":"123456"}'
 ```
 
 ## Agent API Surface
@@ -98,6 +110,7 @@ Read-only and aggregated status:
 Device-control and service actions:
 
 - `POST /api/device/reboot`
+- `POST /api/device/shutdown`
 - `POST /api/device/factory-reset`
 - `POST /api/device/power-save`
 - `PUT /api/device/power-save`
@@ -132,6 +145,7 @@ These endpoints back both status reporting and band-specific configuration such 
 ### Modem and mobile data
 
 - `GET /api/data-usage`
+- `PUT /api/data-usage/reset-day`
 - `GET /api/modem/status`
 - `POST /api/modem/online`
 - `GET /api/modem/data`
@@ -395,10 +409,10 @@ Configurable in the current UI:
 Visible in the current UI:
 
 - current TTL clamp status, including IPv6 state
-- monthly/session/lifetime usage
-- local browser-only monthly usage limit and reset day tracking
-
-Note: the usage limit bar is a front-end convenience stored in `localStorage`; it does not program a device-side quota.
+- current reset-day billing cycle usage
+- upload, download, and total usage for the current cycle
+- data since power on
+- daily and device lifetime counters
 
 ### Band & Cell Locking
 
@@ -449,17 +463,6 @@ Visible in the current UI:
 - logger run state, elapsed time, duration, sample/event counts
 - AT command history and responses
 
-### Tools
-
-Configurable in the current UI:
-
-- USB mode switch:
-  - `RNDIS`
-  - `ECM`
-  - `NCM`
-  - `DEBUG`
-- device reboot with confirmation
-
 ### Settings
 
 Visible in the current UI:
@@ -474,6 +477,13 @@ Configurable in the current UI:
 
 - restart the backend agent
 - reload the dashboard
+- reboot the device with confirmation
+- shut down the device with confirmation
+- USB mode switch:
+  - `RNDIS`
+  - `ECM`
+  - `NCM`
+  - `DEBUG`
 - sign out
 
 ## API Features Not Yet Surfaced In The Current Navigation
