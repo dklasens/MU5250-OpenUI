@@ -1,4 +1,5 @@
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
@@ -20,11 +21,60 @@ pub fn enforce_wifi_state_on_boot() {
     if !persist_on_boot_enabled(&persisted) {
         return;
     }
+    // Stock /sbin/zte_start_wlan_at_boot.sh forces both radios enabled and
+    // brings up Wi-Fi via zwrt_qcmap_cli after a 5-40s wait for QCMAP/topsw
+    // services. Racing it from rc.local leaves the radios in an indeterminate
+    // state — sometimes both off. Spawn off the main thread so the HTTP
+    // server starts immediately, then wait for stock to finish before applying.
+    std::thread::spawn(move || {
+        wait_for_stock_wlan_boot(Duration::from_secs(90));
+        wait_for_wlan_idle(Duration::from_secs(30));
+        apply_persisted_state(&persisted, 2);
+    });
+}
 
-    let mut changed = false;
+fn wait_for_stock_wlan_boot(max: Duration) {
+    let deadline = Instant::now() + max;
+    // Brief grace period so an about-to-start stock script registers.
+    std::thread::sleep(Duration::from_millis(500));
+    while Instant::now() < deadline {
+        let running = Command::new("sh")
+            .args(["-c", "pgrep -f zte_start_wlan_at_boot >/dev/null"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !running {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
 
-    if let Some(global) = persisted[WIFI_ONOFF_KEY].as_str() {
-        if !global.is_empty() {
+fn wait_for_wlan_idle(max: Duration) {
+    let deadline = Instant::now() + max;
+    let mut consecutive_idle = 0;
+    while Instant::now() < deadline {
+        let status = ubus::call("zwrt_wlan", "status", Some("{}"))
+            .ok()
+            .and_then(|v| v["app_status"].as_str().map(String::from))
+            .unwrap_or_default();
+        if status == "idle" {
+            consecutive_idle += 1;
+            if consecutive_idle >= 2 {
+                return;
+            }
+        } else {
+            consecutive_idle = 0;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+fn apply_persisted_state(persisted: &Value, max_attempts: u32) {
+    for attempt in 1..=max_attempts {
+        let mut changed = false;
+
+        if let Some(global) = persisted[WIFI_ONOFF_KEY].as_str().filter(|s| !s.is_empty()) {
             let current_global = current_wifi_onoff_value();
             let current_user = uci_get_feature(WIFI_ONOFF_BY_USER_KEY);
             if current_global != global || (!current_user.is_empty() && current_user != global) {
@@ -35,26 +85,59 @@ pub fn enforce_wifi_state_on_boot() {
                 changed = true;
             }
         }
-    }
-
-    if let Some(r2) = persisted["radio2_disabled"].as_str() {
-        if ubus::uci_get("wireless.wifi0.disabled").unwrap_or_default() != r2 {
-            let _ = ubus::uci_set_no_commit("wireless.wifi0.disabled", r2);
-            changed = true;
+        if let Some(r2) = persisted["radio2_disabled"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+        {
+            if ubus::uci_get("wireless.wifi0.disabled").unwrap_or_default() != r2 {
+                let _ = ubus::uci_set_no_commit("wireless.wifi0.disabled", r2);
+                changed = true;
+            }
         }
-    }
-    if let Some(r5) = persisted["radio5_disabled"].as_str() {
-        if ubus::uci_get("wireless.wifi1.disabled").unwrap_or_default() != r5 {
-            let _ = ubus::uci_set_no_commit("wireless.wifi1.disabled", r5);
-            changed = true;
+        if let Some(r5) = persisted["radio5_disabled"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+        {
+            if ubus::uci_get("wireless.wifi1.disabled").unwrap_or_default() != r5 {
+                let _ = ubus::uci_set_no_commit("wireless.wifi1.disabled", r5);
+                changed = true;
+            }
         }
-    }
 
-    if changed {
-        let _ = ubus::uci_commit("wireless");
-        let _ = Command::new("sh")
-            .args(["-c", "ubus call zwrt_wlan reload >/dev/null 2>&1 &"])
-            .output();
+        if !changed {
+            return;
+        }
+
+        if ubus::uci_commit("wireless").is_err() {
+            if attempt < max_attempts {
+                std::thread::sleep(Duration::from_secs(2));
+                continue;
+            }
+            return;
+        }
+        let _ = reload_wireless();
+        // Give the wlan daemon time to consume the reload then settle.
+        wait_for_wlan_idle(Duration::from_secs(20));
+
+        let report = ubus::call("zwrt_wlan", "report", Some("{}")).ok();
+        let want_r2 = persisted["radio2_disabled"].as_str().unwrap_or("");
+        let want_r5 = persisted["radio5_disabled"].as_str().unwrap_or("");
+        let actual_r2 = report
+            .as_ref()
+            .and_then(|v| v["radio2_disabled"].as_str())
+            .unwrap_or("");
+        let actual_r5 = report
+            .as_ref()
+            .and_then(|v| v["radio5_disabled"].as_str())
+            .unwrap_or("");
+        let r2_ok = want_r2.is_empty() || actual_r2 == want_r2;
+        let r5_ok = want_r5.is_empty() || actual_r5 == want_r5;
+        if r2_ok && r5_ok {
+            return;
+        }
+        if attempt < max_attempts {
+            std::thread::sleep(Duration::from_secs(2));
+        }
     }
 }
 
@@ -172,6 +255,40 @@ fn read_persisted_wifi_state() -> Value {
         .unwrap_or_else(|| json!({}))
 }
 
+fn write_persisted_wifi_state(persisted: &Value) {
+    let _ = std::fs::write(
+        WIFI_CONFIG_PATH,
+        serde_json::to_string(persisted).unwrap_or_default(),
+    );
+}
+
+/// Refresh wifi_onoff and per-radio fields from live state, skipping empty
+/// reads so we never persist invalid values that would brick boot enforcement.
+/// Returns true if any field changed.
+fn snapshot_persistable_state_into(persisted: &mut Value) -> bool {
+    let mut changed = false;
+    let wifi_onoff = current_wifi_onoff_value();
+    if !wifi_onoff.is_empty() && persisted[WIFI_ONOFF_KEY].as_str() != Some(wifi_onoff.as_str()) {
+        persisted[WIFI_ONOFF_KEY] = json!(wifi_onoff);
+        changed = true;
+    }
+    let r2 = ubus::uci_get("wireless.wifi0.disabled").unwrap_or_default();
+    if !r2.is_empty() && persisted["radio2_disabled"].as_str() != Some(r2.as_str()) {
+        persisted["radio2_disabled"] = json!(r2);
+        changed = true;
+    }
+    let r5 = ubus::uci_get("wireless.wifi1.disabled").unwrap_or_default();
+    if !r5.is_empty() && persisted["radio5_disabled"].as_str() != Some(r5.as_str()) {
+        persisted["radio5_disabled"] = json!(r5);
+        changed = true;
+    }
+    changed
+}
+
+fn reload_wireless() -> Result<(), String> {
+    ubus::call("zwrt_wlan", "reload", Some("{}")).map(|_| ())
+}
+
 fn persist_on_boot_enabled(persisted: &Value) -> bool {
     persisted
         .get(PERSIST_ON_BOOT_KEY)
@@ -222,11 +339,15 @@ pub fn wifi_status(_state: &AppState) -> (u16, Value) {
     }
     result.insert("wifi6_supported".into(), json!(wifi6_supported));
 
-    let persisted = read_persisted_wifi_state();
-    result.insert(
-        PERSIST_ON_BOOT_KEY.into(),
-        json!(persist_on_boot_enabled(&persisted)),
-    );
+    let mut persisted = read_persisted_wifi_state();
+    let persist_enabled = persist_on_boot_enabled(&persisted);
+    // Keep the snapshot in sync with reality whenever someone views the page.
+    // Without this, touchscreen toggles or per-band changes leave wifi_onoff
+    // stale and boot enforcement would force the old value.
+    if persist_enabled && snapshot_persistable_state_into(&mut persisted) {
+        write_persisted_wifi_state(&persisted);
+    }
+    result.insert(PERSIST_ON_BOOT_KEY.into(), json!(persist_enabled));
 
     // Radio config
     result.insert(
@@ -378,15 +499,9 @@ pub fn wifi_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
             persisted_state[PERSIST_ON_BOOT_KEY] = json!(if enabled { "1" } else { "0" });
             persisted_state_changed = true;
             if enabled {
-                // Refresh the on/off snapshot when re-enabling persistence.
-                let wifi_onoff = current_wifi_onoff_value();
-                if !wifi_onoff.is_empty() {
-                    persisted_state[WIFI_ONOFF_KEY] = json!(wifi_onoff);
-                }
-                persisted_state["radio2_disabled"] =
-                    json!(ubus::uci_get("wireless.wifi0.disabled").unwrap_or_default());
-                persisted_state["radio5_disabled"] =
-                    json!(ubus::uci_get("wireless.wifi1.disabled").unwrap_or_default());
+                // Snapshot live state, skipping empty reads so we never persist
+                // a value that would brick boot enforcement.
+                snapshot_persistable_state_into(&mut persisted_state);
             }
             continue;
         }
@@ -419,7 +534,8 @@ pub fn wifi_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
                 changed_any = true;
             }
 
-            let current_user = ubus::uci_get("wireless.zte_mbb.wifi_onoff_by_user").unwrap_or_default();
+            let current_user =
+                ubus::uci_get("wireless.zte_mbb.wifi_onoff_by_user").unwrap_or_default();
             if !current_user.is_empty() && current_user != val_str {
                 if let Err(e) =
                     ubus::uci_set_no_commit("wireless.zte_mbb.wifi_onoff_by_user", &val_str)
@@ -445,8 +561,7 @@ pub fn wifi_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
                 continue;
             }
             if current != val_str {
-                if let Err(e) = ubus::uci_set_no_commit("wireless.zte_mbb.wifi6_switch", &val_str)
-                {
+                if let Err(e) = ubus::uci_set_no_commit("wireless.zte_mbb.wifi6_switch", &val_str) {
                     return (500, json!({"ok": false, "error": e}));
                 }
                 wireless_changed = true;
@@ -473,7 +588,6 @@ pub fn wifi_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
             }
             continue;
         }
-
     }
 
     // Commit batched changes
@@ -483,11 +597,12 @@ pub fn wifi_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
         }
     }
 
-    if wireless_changed || persisted_state_changed {
-        let _ = std::fs::write(
-            WIFI_CONFIG_PATH,
-            serde_json::to_string(&persisted_state).unwrap_or_default(),
-        );
+    // Only persist when the toggle is on (or the user just changed it), so the
+    // file doesn't drift while persistence is disabled.
+    let persist_toggled = obj.contains_key(PERSIST_ON_BOOT_KEY);
+    let persist_currently_on = persist_on_boot_enabled(&persisted_state);
+    if (wireless_changed || persisted_state_changed) && (persist_toggled || persist_currently_on) {
+        write_persisted_wifi_state(&persisted_state);
     }
 
     if !wireless_changed && !persisted_state_changed {
@@ -529,11 +644,15 @@ pub fn wifi_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
         );
     }
 
-    // Full reload needed
+    // Full reload needed. Run synchronously so a reload failure surfaces to
+    // the caller instead of leaving UCI committed but running config stale.
     if wireless_changed {
-        let _ = Command::new("sh")
-            .args(["-c", "ubus call zwrt_wlan reload >/dev/null 2>&1 &"])
-            .output();
+        if let Err(e) = reload_wireless() {
+            return (
+                500,
+                json!({"ok": false, "error": format!("wireless reload failed: {e}")}),
+            );
+        }
     }
 
     (200, json!({"ok": true, "data": {"status": "ok"}}))
@@ -668,10 +787,12 @@ pub fn guest_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
     if let Err(e) = ubus::uci_commit("wireless") {
         return (500, json!({"ok": false, "error": e}));
     }
-
-    let _ = Command::new("sh")
-        .args(["-c", "ubus call zwrt_wlan reload >/dev/null 2>&1 &"])
-        .output();
+    if let Err(e) = reload_wireless() {
+        return (
+            500,
+            json!({"ok": false, "error": format!("wireless reload failed: {e}")}),
+        );
+    }
 
     (200, json!({"ok": true, "data": {"status": "ok"}}))
 }

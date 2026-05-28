@@ -139,6 +139,46 @@ export interface Client {
   wired_link_mbps?: number
 }
 export interface CpuInfo { overall: number; cores: number[] }
+export type UsbMode = 'ecm' | 'rndis' | 'ncm'
+export interface UsbModeCapability {
+  mode: UsbMode
+  supported: boolean
+  experimental: boolean
+  function?: string
+  note?: string
+}
+export interface UsbStatus {
+  active_mode: UsbMode | null
+  default_mode?: UsbMode
+  ncm_persist_on_boot?: boolean
+  supported_modes: string[]
+  experimental_modes?: string[]
+  mode_capabilities?: UsbModeCapability[]
+  composition_functions?: string[]
+  configfs?: {
+    present?: boolean
+    ncm?: boolean
+    gsi_ecm?: boolean
+    gsi_rndis?: boolean
+  }
+  bridge?: {
+    name?: string
+    members?: string[]
+  }
+  interfaces?: {
+    ecm0?: boolean
+    rndis0?: boolean
+    ncm0?: boolean
+    ncm_ifname?: string | null
+  }
+  usb_ids?: {
+    vendor?: string | null
+    product?: string | null
+  }
+  ncm_last_error?: string
+  connect?: number
+  typec_cc?: string
+}
 export interface MemInfo { total_kb: number; used_kb: number; free_kb: number; usage_pct: number }
 export interface WifiBand {
   ssid?: string
@@ -794,7 +834,11 @@ export const api = {
   restartAgent: () => post('/api/system/restart-agent', {}),
 
   // USB
-  usbMode: (mode: string) => put('/api/usb/mode', { mode }),
+  usbMode: (mode: string, options?: { confirm_experimental?: boolean }) =>
+    put('/api/usb/mode', { mode, ...(options ?? {}) }),
+  usbDefaultMode: (mode: UsbMode, options?: { confirm_experimental?: boolean }) =>
+    put('/api/usb/default', { mode, ...(options ?? {}) }),
+  usbStatus: (): Promise<UsbStatus> => get('/api/usb/status'),
 
   // TTL
   ttlStatus: () => get('/api/ttl/status'),

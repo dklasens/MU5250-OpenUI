@@ -69,7 +69,11 @@ fn parse_station_dump(iface: &str, band: &str) -> HashMap<String, WifiStationInf
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("Station ") {
             flush(&mut stations, &mut current_mac, &mut current);
-            current_mac = rest.split_whitespace().next().unwrap_or_default().to_lowercase();
+            current_mac = rest
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .to_lowercase();
             current = WifiStationInfo {
                 band: band.to_string(),
                 ..WifiStationInfo::default()
@@ -152,12 +156,24 @@ fn arp_entries() -> Vec<(String, String)> {
     entries
 }
 
-fn medium_for_port(port: Option<&str>, wifi: Option<&WifiStationInfo>) -> (&'static str, Option<&'static str>) {
+fn medium_for_port(
+    port: Option<&str>,
+    wifi: Option<&WifiStationInfo>,
+) -> (&'static str, Option<&'static str>) {
     if let Some(wifi) = wifi {
-        return ("wifi", Some(if wifi.band == "5 GHz" { "wifi_5ghz" } else { "wifi_2ghz" }));
+        return (
+            "wifi",
+            Some(if wifi.band == "5 GHz" {
+                "wifi_5ghz"
+            } else {
+                "wifi_2ghz"
+            }),
+        );
     }
     match port.unwrap_or_default() {
-        p if p.starts_with("ecm") || p.starts_with("usb") => ("usb-c", Some("usb_c")),
+        p if p.starts_with("ecm") || p.starts_with("ncm") || p.starts_with("usb") => {
+            ("usb-c", Some("usb_c"))
+        }
         p if p.starts_with("eth") => ("ethernet", Some("ethernet")),
         _ => ("wired", None),
     }

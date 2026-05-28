@@ -482,8 +482,10 @@ Configurable in the current UI:
 - USB mode switch:
   - `RNDIS`
   - `ECM`
-  - `NCM`
+  - `NCM` (experimental configfs path, not exposed by the stock ZTE switch)
   - `DEBUG`
+- optional persisted NCM-after-boot default, applied by the agent after the
+  stock USB stack has settled
 - sign out
 
 ## API Features Not Yet Surfaced In The Current Navigation

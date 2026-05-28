@@ -1,6 +1,21 @@
 import { useState, useEffect, useCallback } from 'react'
-import { api, type ThermalAll, type BatteryDetail, type BatteryBspInfo } from '../api'
+import { api, formatBytes, type ThermalAll, type BatteryDetail, type BatteryBspInfo, type CpuInfo, type MemInfo } from '../api'
 import Card from '../components/Card'
+
+function usageColor(pct: number, hot = 80, warm = 50) {
+  if (pct >= hot) return 'bg-red-500'
+  if (pct >= warm) return 'bg-amber-500'
+  return 'bg-slds-blue'
+}
+
+function UsageBar({ pct, hot, warm }: { pct: number; hot?: number; warm?: number }) {
+  const clamped = Math.max(0, Math.min(100, pct))
+  return (
+    <div className="h-2 rounded-full bg-gray-100 overflow-hidden">
+      <div className={`h-full rounded-full transition-all duration-500 ${usageColor(clamped, hot, warm)}`} style={{ width: `${clamped}%` }} />
+    </div>
+  )
+}
 
 function tempColor(c?: number) {
   if (c == null) return 'text-gray-500'
@@ -40,12 +55,18 @@ export default function MetricsPage() {
   const [thermal, setThermal] = useState<ThermalAll | null>(null)
   const [battery, setBattery] = useState<BatteryDetail | null>(null)
   const [batteryInfo, setBatteryInfo] = useState<BatteryBspInfo | null>(null)
+  const [cpu, setCpu] = useState<CpuInfo | null>(null)
+  const [mem, setMem] = useState<MemInfo | null>(null)
 
   const fetchAll = useCallback(async () => {
-    const [t, b, bi] = await Promise.allSettled([api.thermalAll(), api.batteryDetail(), api.batteryInfoUbus()])
+    const [t, b, bi, c, m] = await Promise.allSettled([
+      api.thermalAll(), api.batteryDetail(), api.batteryInfoUbus(), api.cpu(), api.memory(),
+    ])
     if (t.status === 'fulfilled') setThermal(t.value)
     if (b.status === 'fulfilled') setBattery(b.value)
     if (bi.status === 'fulfilled') setBatteryInfo(bi.value)
+    if (c.status === 'fulfilled') setCpu(c.value)
+    if (m.status === 'fulfilled') setMem(m.value)
   }, [])
 
   useEffect(() => {
@@ -124,6 +145,49 @@ export default function MetricsPage() {
               <div className="border-t border-gray-200/60 pt-1.5">
                 <ThermalRow label="Average" value={cpuAvg} />
               </div>
+            </div>
+          ) : (
+            <p className="text-sm text-gray-500">Loading...</p>
+          )}
+        </Card>
+
+        <Card title="CPU Usage">
+          {cpu ? (
+            <div className="space-y-3">
+              <div>
+                <div className="mb-1 flex justify-between text-sm">
+                  <span className="font-medium text-gray-900">Overall</span>
+                  <span className="text-gray-900">{cpu.overall.toFixed(1)}%</span>
+                </div>
+                <UsageBar pct={cpu.overall} />
+              </div>
+              {cpu.cores.length > 0 && (
+                <div className="space-y-1.5 border-t border-gray-200/60 pt-3">
+                  {cpu.cores.map((pct, i) => (
+                    <div key={i}>
+                      <div className="mb-0.5 flex justify-between text-xs">
+                        <span className="text-gray-500">Core {i}</span>
+                        <span className="text-gray-600">{pct.toFixed(1)}%</span>
+                      </div>
+                      <UsageBar pct={pct} />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <p className="text-sm text-gray-500">Loading...</p>
+          )}
+        </Card>
+
+        <Card title="Memory">
+          {mem ? (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-gray-500">Usage</span>
+                <span className="text-gray-900">{formatBytes(mem.used_kb * 1024)} / {formatBytes(mem.total_kb * 1024)} ({mem.usage_pct.toFixed(0)}%)</span>
+              </div>
+              <UsageBar pct={mem.usage_pct} hot={90} warm={75} />
             </div>
           ) : (
             <p className="text-sm text-gray-500">Loading...</p>

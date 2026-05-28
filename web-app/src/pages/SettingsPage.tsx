@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Power, RefreshCw, RotateCcw } from 'lucide-react'
-import { api, formatBytes, type DeviceInfo, type SimInfo, type MemInfo, API_BASE } from '../api'
+import { api, formatBytes, type DeviceInfo, type SimInfo, type UsbStatus, API_BASE } from '../api'
 import Card from '../components/Card'
 
 interface Props { onLogout: () => void }
@@ -13,16 +13,66 @@ function controlMessageClass(type: ControlMessage['type']) {
   return 'text-amber-500'
 }
 
+type UsbModeKey = 'rndis' | 'ecm' | 'ncm' | 'debug'
+
+const USB_MODE_INFO: Record<UsbModeKey, { label: string; description: string; warning?: string }> = {
+  rndis: {
+    label: 'RNDIS',
+    description: "Microsoft's USB networking. Native on Windows; needs unmaintained drivers on macOS — avoid for Mac.",
+  },
+  ecm: {
+    label: 'ECM',
+    description: 'CDC-ECM USB Ethernet. Driver-free on macOS, Linux, and modern Windows. Best supported mode on this firmware.',
+  },
+  ncm: {
+    label: 'NCM',
+    description: 'CDC-NCM USB Ethernet. Higher throughput than ECM in theory. This firmware exposes ncm.0 in configfs, but ZTE does not wire it into the normal USB switch.',
+    warning: 'Experimental',
+  },
+  debug: {
+    label: 'DEBUG',
+    description: 'ADB / serial console mode. Not for network tethering.',
+  },
+}
+
 function UsbModeSection() {
   const [msg, setMsg] = useState<ControlMessage | null>(null)
   const [loading, setLoading] = useState(false)
+  const [defaultLoading, setDefaultLoading] = useState(false)
+  const [status, setStatus] = useState<UsbStatus | null>(null)
 
-  async function setMode(mode: string) {
-    setLoading(true)
+  const fetchStatus = useCallback(async () => {
+    try { setStatus(await api.usbStatus()) } catch { /* ignore */ }
+  }, [])
+
+  useEffect(() => { fetchStatus() }, [fetchStatus])
+
+  async function setMode(mode: UsbModeKey) {
     setMsg(null)
+    const capability = status?.mode_capabilities?.find(c => c.mode === mode)
+    const isSupported = mode === 'debug' || capability?.supported || status?.supported_modes?.includes(mode)
+    if (!isSupported) {
+      setMsg({ type: 'error', text: `${USB_MODE_INFO[mode].label} is not available on this firmware.` })
+      return
+    }
+    const isExperimentalNcm = mode === 'ncm'
+    if (isExperimentalNcm) {
+      const confirmed = window.confirm(
+        'Experimental NCM will disconnect and re-enumerate USB. Keep a Wi-Fi management path open before continuing.',
+      )
+      if (!confirmed) return
+    }
+
+    setLoading(true)
     try {
-      await api.usbMode(mode)
-      setMsg({ type: 'success', text: `USB mode set to ${mode.toUpperCase()}. Device may need reboot.` })
+      await api.usbMode(mode, isExperimentalNcm ? { confirm_experimental: true } : undefined)
+      const note = isExperimentalNcm
+        ? 'Experimental NCM switch scheduled. USB will disconnect and should re-enumerate shortly.'
+        : mode === 'ecm' && activeMode === 'ncm'
+          ? 'ECM rollback scheduled. USB will disconnect and should re-enumerate shortly.'
+          : `USB mode set to ${mode.toUpperCase()}. A reboot is required for the change to take effect.`
+      setMsg({ type: 'success', text: note })
+      fetchStatus()
     } catch (e) {
       setMsg({ type: 'error', text: e instanceof Error ? e.message : 'Failed to set USB mode' })
     } finally {
@@ -30,22 +80,126 @@ function UsbModeSection() {
     }
   }
 
+  async function setNcmDefault(enabled: boolean) {
+    setMsg(null)
+    const capability = status?.mode_capabilities?.find(c => c.mode === 'ncm')
+    const ncmSupported = capability?.supported || status?.supported_modes?.includes('ncm')
+    if (enabled && !ncmSupported) {
+      setMsg({ type: 'error', text: 'NCM is not available on this firmware.' })
+      return
+    }
+    if (enabled) {
+      const confirmed = window.confirm(
+        'Persisting NCM will re-enumerate USB automatically after each boot. Keep Wi-Fi management available before enabling it.',
+      )
+      if (!confirmed) return
+    }
+
+    setDefaultLoading(true)
+    try {
+      await api.usbDefaultMode(enabled ? 'ncm' : 'ecm', enabled ? { confirm_experimental: true } : undefined)
+      setMsg({
+        type: 'success',
+        text: enabled
+          ? 'NCM will be applied automatically after boot.'
+          : 'USB boot default returned to ECM.',
+      })
+      fetchStatus()
+    } catch (e) {
+      setMsg({ type: 'error', text: e instanceof Error ? e.message : 'Failed to set USB boot default' })
+    } finally {
+      setDefaultLoading(false)
+    }
+  }
+
+  const activeMode = status?.active_mode ?? null
+  const ncmDefaultEnabled = status?.ncm_persist_on_boot ?? status?.default_mode === 'ncm'
+  const supported = new Set(status?.supported_modes ?? ['rndis', 'ecm'])
+  const experimental = new Set(status?.experimental_modes ?? [])
+  const modes: UsbModeKey[] = ['rndis', 'ecm', 'ncm', 'debug']
+  const composition = status?.composition_functions?.join(', ')
+  const bridgeMembers = status?.bridge?.members?.join(', ')
+
   return (
     <Card title="USB Mode">
       <div className="space-y-3">
-        <p className="text-xs text-gray-500">Switch USB operating mode. A reboot may be required.</p>
+        <p className="text-xs text-gray-500">
+          Switch USB operating mode. A reboot is required for the change to take effect.
+          {activeMode && (
+            <> Currently active: <span className="font-bold text-gray-700">{activeMode.toUpperCase()}</span>.</>
+          )}
+          {status?.default_mode && (
+            <> Boot default: <span className="font-bold text-gray-700">{status.default_mode.toUpperCase()}</span>.</>
+          )}
+        </p>
+        {(composition || bridgeMembers) && (
+          <p className="text-[11px] text-gray-500">
+            {composition && <>Composition: <span className="font-mono text-gray-600">{composition}</span>.</>}
+            {bridgeMembers && <> Bridge: <span className="font-mono text-gray-600">{bridgeMembers}</span>.</>}
+          </p>
+        )}
+        {status?.ncm_last_error && (
+          <p className="text-xs text-red-500">Last NCM attempt: {status.ncm_last_error}</p>
+        )}
         {msg && <p className={`text-sm ${controlMessageClass(msg.type)}`}>{msg.text}</p>}
         <div className="flex flex-wrap gap-2">
-          {['rndis', 'ecm', 'ncm', 'debug'].map(mode => (
-            <button
-              key={mode}
-              onClick={() => setMode(mode)}
-              disabled={loading}
-              className="bg-white border border-gray-200 hover:bg-gray-50 px-3 py-2 rounded-xl font-bold text-gray-500 shadow-macos transition-all active:scale-95 text-sm disabled:opacity-40"
-            >
-              {mode.toUpperCase()}
-            </button>
-          ))}
+          {modes.map(mode => {
+            const info = USB_MODE_INFO[mode]
+            const isActive = activeMode === mode
+            const capability = status?.mode_capabilities?.find(c => c.mode === mode)
+            const isExperimental = experimental.has(mode)
+            const isDebugMode = mode === 'debug'
+            const isSupported = isDebugMode || capability?.supported || supported.has(mode)
+            const isUnsupported = !isSupported && !isDebugMode
+            const baseCls = 'inline-flex flex-col items-start gap-0.5 px-3 py-2 rounded-xl font-bold shadow-macos transition-all active:scale-95 text-sm border'
+            const stateCls = isActive
+              ? 'bg-green-50 border-green-300 text-green-700 hover:bg-green-100'
+              : isExperimental
+                ? 'bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100'
+              : isUnsupported
+                ? 'bg-gray-50 border-gray-200 text-gray-400 hover:bg-gray-100'
+                : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'
+            return (
+              <button
+                key={mode}
+                onClick={() => setMode(mode)}
+                disabled={loading || isUnsupported}
+                title={capability?.note ? `${info.description} ${capability.note}` : info.description}
+                className={`${baseCls} ${stateCls} disabled:opacity-40`}
+              >
+                <span className="flex items-center gap-1.5">
+                  {info.label}
+                  {isActive && <span className="h-1.5 w-1.5 rounded-full bg-green-500" />}
+                </span>
+                {info.warning && (
+                  <span className="text-[10px] font-normal text-amber-600 normal-case">{info.warning}</span>
+                )}
+                {isUnsupported && (
+                  <span className="text-[10px] font-normal text-gray-400 normal-case">Unavailable</span>
+                )}
+                {isActive && (
+                  <span className="text-[10px] font-normal text-green-600 normal-case">Active</span>
+                )}
+              </button>
+            )
+          })}
+        </div>
+        <div className="flex flex-col gap-2 border-t border-gray-100 pt-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-bold text-gray-700">NCM after boot</p>
+            <p className="text-xs text-gray-500">Applies the NCM composition after the stock USB stack has settled.</p>
+          </div>
+          <button
+            onClick={() => setNcmDefault(!ncmDefaultEnabled)}
+            disabled={defaultLoading || (!ncmDefaultEnabled && !supported.has('ncm'))}
+            className={`inline-flex min-w-20 items-center justify-center rounded-xl px-3 py-2 text-sm font-bold shadow-macos transition-all active:scale-95 disabled:opacity-40 ${
+              ncmDefaultEnabled
+                ? 'bg-amber-50 text-amber-700 hover:bg-amber-100'
+                : 'bg-white border border-gray-200 text-gray-700 hover:bg-gray-50'
+            }`}
+          >
+            {defaultLoading ? 'Saving...' : ncmDefaultEnabled ? 'On' : 'Off'}
+          </button>
         </div>
       </div>
     </Card>
@@ -56,7 +210,6 @@ export default function SettingsPage({ onLogout }: Props) {
   const [device, setDevice] = useState<DeviceInfo | null>(null)
   const [sim, setSim] = useState<SimInfo | null>(null)
   const [imei, setImei] = useState('')
-  const [mem, setMem] = useState<MemInfo | null>(null)
   const [top, setTop] = useState<{ pid?: number; name?: string; cpu_percent?: number; mem_kb?: number }[]>([])
   const [controlMsg, setControlMsg] = useState<ControlMessage | null>(null)
   const [confirmAction, setConfirmAction] = useState<'reboot' | 'shutdown' | null>(null)
@@ -64,13 +217,12 @@ export default function SettingsPage({ onLogout }: Props) {
 
   const fetchAll = useCallback(async () => {
     const results = await Promise.allSettled([
-      api.device(), api.simInfo(), api.simImei(), api.memory(), api.top(),
+      api.device(), api.simInfo(), api.simImei(), api.top(),
     ])
-    const [d, s, i, m, p] = results
+    const [d, s, i, p] = results
     if (d.status === 'fulfilled') setDevice(d.value)
     if (s.status === 'fulfilled') setSim(s.value)
     if (i.status === 'fulfilled' && i.value) setImei(i.value.imei ?? '')
-    if (m.status === 'fulfilled') setMem(m.value)
     if (p.status === 'fulfilled') setTop(Array.isArray(p.value) ? p.value.slice(0, 15) : [])
   }, [])
 
@@ -160,20 +312,6 @@ export default function SettingsPage({ onLogout }: Props) {
               </div>
             ))}
           </div>
-        </Card>
-
-        <Card title="Memory">
-          {mem && (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-gray-500">Usage</span>
-                <span className="text-gray-900">{formatBytes(mem.used_kb * 1024)} / {formatBytes(mem.total_kb * 1024)} ({mem.usage_pct.toFixed(0)}%)</span>
-              </div>
-              <div className="h-2 rounded-full bg-gray-100 overflow-hidden">
-                <div className="h-full rounded-full bg-slds-blue transition-all duration-500" style={{ width: `${mem.usage_pct}%` }} />
-              </div>
-            </div>
-          )}
         </Card>
 
         <Card title="Connection">
