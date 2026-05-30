@@ -282,9 +282,6 @@ function Info({ label, value }: { label: string; value: string }) {
 
 export default function WiFiPage() {
   const [wifi, setWifi] = useState<WifiAll | null>(null)
-  const [persistSaving, setPersistSaving] = useState(false)
-  const [persistMsg, setPersistMsg] = useState('')
-  const [persistErr, setPersistErr] = useState(false)
   const [masterSaving, setMasterSaving] = useState(false)
   const [masterMsg, setMasterMsg] = useState('')
   const [masterErr, setMasterErr] = useState(false)
@@ -297,26 +294,6 @@ export default function WiFiPage() {
   }, [])
 
   useEffect(() => { fetchWifi() }, [fetchWifi])
-
-  async function togglePersistOnBoot() {
-    if (!wifi) return
-    const next = !wifi.persist_on_boot
-    setPersistSaving(true)
-    setPersistMsg('')
-    setPersistErr(false)
-    try {
-      await api.wifiSet({ persist_on_boot: next ? '1' : '0' })
-      setPersistMsg(next
-        ? 'Current Wi-Fi on/off state will be restored after reboot'
-        : 'Stock firmware will control Wi-Fi on/off state after reboot')
-      await fetchWifi()
-    } catch (e) {
-      setPersistErr(true)
-      setPersistMsg(e instanceof Error ? e.message : 'Error')
-    } finally {
-      setPersistSaving(false)
-    }
-  }
 
   async function toggleMasterWifi() {
     if (!wifi) return
@@ -411,40 +388,6 @@ export default function WiFiPage() {
           {masterMsg && (
             <p className={`text-xs ${masterErr ? 'text-red-500' : 'text-green-500'}`}>
               {masterMsg}
-            </p>
-          )}
-        </div>
-      </Card>
-
-      <Card title="Reboot Persistence">
-        <div className="space-y-3">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-sm font-medium text-gray-900">Persist Wi-Fi state after reboot</p>
-              <p className="text-xs text-gray-500">
-                {wifi.persist_on_boot
-                  ? 'ON: the current master switch and per-band on/off state are restored after restart'
-                  : 'OFF: stock firmware decides the Wi-Fi on/off state during boot'}
-              </p>
-            </div>
-            <button
-              onClick={togglePersistOnBoot}
-              disabled={persistSaving}
-              className={`rounded-xl px-3 py-1.5 text-xs font-bold transition-all duration-150 ${
-                wifi.persist_on_boot
-                  ? 'bg-green-50 text-green-600 border border-green-200 hover:bg-green-100'
-                  : 'bg-gray-100 text-gray-600 border border-gray-200 hover:bg-gray-200'
-              } disabled:opacity-40`}
-            >
-              {persistSaving ? 'Saving\u2026' : (wifi.persist_on_boot ? 'On' : 'Off')}
-            </button>
-          </div>
-          <p className="text-xs text-gray-500">
-            SSID, password, channel, and bandwidth already persist normally. This toggle only affects Wi-Fi enable and disable state after boot.
-          </p>
-          {persistMsg && (
-            <p className={`text-xs ${persistErr ? 'text-red-500' : 'text-green-500'}`}>
-              {persistMsg}
             </p>
           )}
         </div>

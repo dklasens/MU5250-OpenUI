@@ -93,7 +93,6 @@ fn main() {
         .arg("/data/local/tmp/start_ttl.sh")
         .output();
 
-    wifi::enforce_wifi_state_on_boot();
     usb::enforce_usb_mode_on_boot();
 
     server::start(&bind, threads, state);

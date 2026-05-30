@@ -1,145 +1,12 @@
 use std::process::Command;
-use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
 use crate::handlers::AppState;
 use crate::ubus;
 
-const WIFI_CONFIG_PATH: &str = "/data/local/tmp/wifi_config.json";
-const PERSIST_ON_BOOT_KEY: &str = "persist_on_boot";
 const WIFI_ONOFF_KEY: &str = "wifi_onoff";
-const WIFI_ONOFF_BY_USER_KEY: &str = "wifi_onoff_by_user";
 const WIFI6_SWITCH_KEY: &str = "wifi6_switch";
-
-// ---------------------------------------------------------------------------
-// Boot
-// ---------------------------------------------------------------------------
-
-pub fn enforce_wifi_state_on_boot() {
-    let persisted = read_persisted_wifi_state();
-    if !persist_on_boot_enabled(&persisted) {
-        return;
-    }
-    // Stock /sbin/zte_start_wlan_at_boot.sh forces both radios enabled and
-    // brings up Wi-Fi via zwrt_qcmap_cli after a 5-40s wait for QCMAP/topsw
-    // services. Racing it from rc.local leaves the radios in an indeterminate
-    // state — sometimes both off. Spawn off the main thread so the HTTP
-    // server starts immediately, then wait for stock to finish before applying.
-    std::thread::spawn(move || {
-        wait_for_stock_wlan_boot(Duration::from_secs(90));
-        wait_for_wlan_idle(Duration::from_secs(30));
-        apply_persisted_state(&persisted, 2);
-    });
-}
-
-fn wait_for_stock_wlan_boot(max: Duration) {
-    let deadline = Instant::now() + max;
-    // Brief grace period so an about-to-start stock script registers.
-    std::thread::sleep(Duration::from_millis(500));
-    while Instant::now() < deadline {
-        let running = Command::new("sh")
-            .args(["-c", "pgrep -f zte_start_wlan_at_boot >/dev/null"])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if !running {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(500));
-    }
-}
-
-fn wait_for_wlan_idle(max: Duration) {
-    let deadline = Instant::now() + max;
-    let mut consecutive_idle = 0;
-    while Instant::now() < deadline {
-        let status = ubus::call("zwrt_wlan", "status", Some("{}"))
-            .ok()
-            .and_then(|v| v["app_status"].as_str().map(String::from))
-            .unwrap_or_default();
-        if status == "idle" {
-            consecutive_idle += 1;
-            if consecutive_idle >= 2 {
-                return;
-            }
-        } else {
-            consecutive_idle = 0;
-        }
-        std::thread::sleep(Duration::from_millis(500));
-    }
-}
-
-fn apply_persisted_state(persisted: &Value, max_attempts: u32) {
-    for attempt in 1..=max_attempts {
-        let mut changed = false;
-
-        if let Some(global) = persisted[WIFI_ONOFF_KEY].as_str().filter(|s| !s.is_empty()) {
-            let current_global = current_wifi_onoff_value();
-            let current_user = uci_get_feature(WIFI_ONOFF_BY_USER_KEY);
-            if current_global != global || (!current_user.is_empty() && current_user != global) {
-                let _ = ubus::uci_set_no_commit("wireless.zte_mbb.wifi_onoff", global);
-                if !current_user.is_empty() {
-                    let _ = ubus::uci_set_no_commit("wireless.zte_mbb.wifi_onoff_by_user", global);
-                }
-                changed = true;
-            }
-        }
-        if let Some(r2) = persisted["radio2_disabled"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-        {
-            if ubus::uci_get("wireless.wifi0.disabled").unwrap_or_default() != r2 {
-                let _ = ubus::uci_set_no_commit("wireless.wifi0.disabled", r2);
-                changed = true;
-            }
-        }
-        if let Some(r5) = persisted["radio5_disabled"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-        {
-            if ubus::uci_get("wireless.wifi1.disabled").unwrap_or_default() != r5 {
-                let _ = ubus::uci_set_no_commit("wireless.wifi1.disabled", r5);
-                changed = true;
-            }
-        }
-
-        if !changed {
-            return;
-        }
-
-        if ubus::uci_commit("wireless").is_err() {
-            if attempt < max_attempts {
-                std::thread::sleep(Duration::from_secs(2));
-                continue;
-            }
-            return;
-        }
-        let _ = reload_wireless();
-        // Give the wlan daemon time to consume the reload then settle.
-        wait_for_wlan_idle(Duration::from_secs(20));
-
-        let report = ubus::call("zwrt_wlan", "report", Some("{}")).ok();
-        let want_r2 = persisted["radio2_disabled"].as_str().unwrap_or("");
-        let want_r5 = persisted["radio5_disabled"].as_str().unwrap_or("");
-        let actual_r2 = report
-            .as_ref()
-            .and_then(|v| v["radio2_disabled"].as_str())
-            .unwrap_or("");
-        let actual_r5 = report
-            .as_ref()
-            .and_then(|v| v["radio5_disabled"].as_str())
-            .unwrap_or("");
-        let r2_ok = want_r2.is_empty() || actual_r2 == want_r2;
-        let r5_ok = want_r5.is_empty() || actual_r5 == want_r5;
-        if r2_ok && r5_ok {
-            return;
-        }
-        if attempt < max_attempts {
-            std::thread::sleep(Duration::from_secs(2));
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -159,15 +26,6 @@ fn report_value(report: Option<&Value>, key: &str) -> String {
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string()
-}
-
-fn current_wifi_onoff_value() -> String {
-    let value = uci_get_feature(WIFI_ONOFF_KEY);
-    if !value.is_empty() {
-        return value;
-    }
-    let report = ubus::call("zwrt_wlan", "report", Some("{}")).ok();
-    report_value(report.as_ref(), WIFI_ONOFF_KEY)
 }
 
 fn iw_info(iface: &str) -> (String, String) {
@@ -231,69 +89,8 @@ fn sanitize_uci_value(v: &str) -> String {
         .collect()
 }
 
-fn parse_bool_str(v: &str) -> Option<bool> {
-    match v.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" | "enabled" => Some(true),
-        "0" | "false" | "no" | "off" | "disabled" => Some(false),
-        _ => None,
-    }
-}
-
-fn parse_bool_value(value: &Value) -> Option<bool> {
-    match value {
-        Value::Bool(b) => Some(*b),
-        Value::Number(n) => n.as_i64().map(|v| v != 0),
-        Value::String(s) => parse_bool_str(s),
-        _ => None,
-    }
-}
-
-fn read_persisted_wifi_state() -> Value {
-    std::fs::read_to_string(WIFI_CONFIG_PATH)
-        .ok()
-        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .unwrap_or_else(|| json!({}))
-}
-
-fn write_persisted_wifi_state(persisted: &Value) {
-    let _ = std::fs::write(
-        WIFI_CONFIG_PATH,
-        serde_json::to_string(persisted).unwrap_or_default(),
-    );
-}
-
-/// Refresh wifi_onoff and per-radio fields from live state, skipping empty
-/// reads so we never persist invalid values that would brick boot enforcement.
-/// Returns true if any field changed.
-fn snapshot_persistable_state_into(persisted: &mut Value) -> bool {
-    let mut changed = false;
-    let wifi_onoff = current_wifi_onoff_value();
-    if !wifi_onoff.is_empty() && persisted[WIFI_ONOFF_KEY].as_str() != Some(wifi_onoff.as_str()) {
-        persisted[WIFI_ONOFF_KEY] = json!(wifi_onoff);
-        changed = true;
-    }
-    let r2 = ubus::uci_get("wireless.wifi0.disabled").unwrap_or_default();
-    if !r2.is_empty() && persisted["radio2_disabled"].as_str() != Some(r2.as_str()) {
-        persisted["radio2_disabled"] = json!(r2);
-        changed = true;
-    }
-    let r5 = ubus::uci_get("wireless.wifi1.disabled").unwrap_or_default();
-    if !r5.is_empty() && persisted["radio5_disabled"].as_str() != Some(r5.as_str()) {
-        persisted["radio5_disabled"] = json!(r5);
-        changed = true;
-    }
-    changed
-}
-
 fn reload_wireless() -> Result<(), String> {
     ubus::call("zwrt_wlan", "reload", Some("{}")).map(|_| ())
-}
-
-fn persist_on_boot_enabled(persisted: &Value) -> bool {
-    persisted
-        .get(PERSIST_ON_BOOT_KEY)
-        .and_then(parse_bool_value)
-        .unwrap_or(true)
 }
 
 fn sanitize_wifi_key_value(v: &str) -> String {
@@ -338,16 +135,6 @@ pub fn wifi_status(_state: &AppState) -> (u16, Value) {
         result.insert("wifi6_switch".into(), json!(wifi6_switch));
     }
     result.insert("wifi6_supported".into(), json!(wifi6_supported));
-
-    let mut persisted = read_persisted_wifi_state();
-    let persist_enabled = persist_on_boot_enabled(&persisted);
-    // Keep the snapshot in sync with reality whenever someone views the page.
-    // Without this, touchscreen toggles or per-band changes leave wifi_onoff
-    // stale and boot enforcement would force the old value.
-    if persist_enabled && snapshot_persistable_state_into(&mut persisted) {
-        write_persisted_wifi_state(&persisted);
-    }
-    result.insert(PERSIST_ON_BOOT_KEY.into(), json!(persist_enabled));
 
     // Radio config
     result.insert(
@@ -482,30 +269,7 @@ pub fn wifi_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
     let mut txpower_2g_val: Option<u32> = None;
     let mut txpower_5g_val: Option<u32> = None;
 
-    let mut persisted_state = read_persisted_wifi_state();
-    let mut persisted_state_changed = false;
-
     for (key, value) in obj {
-        if key == PERSIST_ON_BOOT_KEY {
-            let enabled = match parse_bool_value(value) {
-                Some(v) => v,
-                None => {
-                    return (
-                        400,
-                        json!({"ok": false, "error": "invalid persist_on_boot value"}),
-                    )
-                }
-            };
-            persisted_state[PERSIST_ON_BOOT_KEY] = json!(if enabled { "1" } else { "0" });
-            persisted_state_changed = true;
-            if enabled {
-                // Snapshot live state, skipping empty reads so we never persist
-                // a value that would brick boot enforcement.
-                snapshot_persistable_state_into(&mut persisted_state);
-            }
-            continue;
-        }
-
         let val_str = match value {
             Value::String(s) => s.clone(),
             Value::Number(n) => n.to_string(),
@@ -517,11 +281,6 @@ pub fn wifi_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
         // Prevent overwriting with masked placeholder
         if (key == "key_2g" || key == "key_5g") && val_str == "••••••••" {
             continue;
-        }
-
-        if key == "radio2_disabled" || key == "radio5_disabled" {
-            persisted_state[key.as_str()] = json!(val_str);
-            persisted_state_changed = true;
         }
 
         if key == WIFI_ONOFF_KEY {
@@ -544,9 +303,6 @@ pub fn wifi_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
                 }
                 changed_any = true;
             }
-
-            persisted_state[WIFI_ONOFF_KEY] = json!(val_str);
-            persisted_state_changed = true;
 
             if changed_any {
                 wireless_changed = true;
@@ -597,15 +353,7 @@ pub fn wifi_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
         }
     }
 
-    // Only persist when the toggle is on (or the user just changed it), so the
-    // file doesn't drift while persistence is disabled.
-    let persist_toggled = obj.contains_key(PERSIST_ON_BOOT_KEY);
-    let persist_currently_on = persist_on_boot_enabled(&persisted_state);
-    if (wireless_changed || persisted_state_changed) && (persist_toggled || persist_currently_on) {
-        write_persisted_wifi_state(&persisted_state);
-    }
-
-    if !wireless_changed && !persisted_state_changed {
+    if !wireless_changed {
         return (
             200,
             json!({"ok": true, "data": {"status": "ok", "note": "no changes"}}),
@@ -613,7 +361,7 @@ pub fn wifi_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
     }
 
     // Hot-apply txpower if that's the only change
-    if wireless_changed && only_txpower {
+    if only_txpower {
         if let Some(val) = txpower_2g_val {
             let _ = Command::new("iw")
                 .args([
@@ -646,13 +394,11 @@ pub fn wifi_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
 
     // Full reload needed. Run synchronously so a reload failure surfaces to
     // the caller instead of leaving UCI committed but running config stale.
-    if wireless_changed {
-        if let Err(e) = reload_wireless() {
-            return (
-                500,
-                json!({"ok": false, "error": format!("wireless reload failed: {e}")}),
-            );
-        }
+    if let Err(e) = reload_wireless() {
+        return (
+            500,
+            json!({"ok": false, "error": format!("wireless reload failed: {e}")}),
+        );
     }
 
     (200, json!({"ok": true, "data": {"status": "ok"}}))
@@ -799,8 +545,7 @@ pub fn guest_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
 
 #[cfg(test)]
 mod tests {
-    use super::{persist_on_boot_enabled, sanitize_wifi_input_value};
-    use serde_json::json;
+    use super::sanitize_wifi_input_value;
 
     #[test]
     fn wifi_keys_keep_special_characters() {
@@ -822,26 +567,5 @@ mod tests {
     fn non_key_values_remain_sanitized() {
         let input = r#"wifi$';`"\name|<&"#;
         assert_eq!(sanitize_wifi_input_value("ssid_5g", input), "wifiname");
-    }
-
-    #[test]
-    fn persist_on_boot_defaults_to_true_when_missing() {
-        assert!(persist_on_boot_enabled(&json!({})));
-    }
-
-    #[test]
-    fn persist_on_boot_parses_common_disabled_values() {
-        assert!(!persist_on_boot_enabled(&json!({"persist_on_boot": false})));
-        assert!(!persist_on_boot_enabled(&json!({"persist_on_boot": 0})));
-        assert!(!persist_on_boot_enabled(&json!({"persist_on_boot": "off"})));
-        assert!(!persist_on_boot_enabled(&json!({"persist_on_boot": "0"})));
-    }
-
-    #[test]
-    fn persist_on_boot_parses_common_enabled_values() {
-        assert!(persist_on_boot_enabled(&json!({"persist_on_boot": true})));
-        assert!(persist_on_boot_enabled(&json!({"persist_on_boot": 1})));
-        assert!(persist_on_boot_enabled(&json!({"persist_on_boot": "on"})));
-        assert!(persist_on_boot_enabled(&json!({"persist_on_boot": "1"})));
     }
 }

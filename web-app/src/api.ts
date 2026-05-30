@@ -198,7 +198,6 @@ export interface WifiAll {
   band_2g: WifiBand
   band_5g: WifiBand
   guest_ssid?: string
-  persist_on_boot: boolean
   master_supported: boolean
   master_enabled: boolean
   wifi6_supported: boolean
@@ -649,8 +648,6 @@ function mapWifi(d: Record<string, unknown>): WifiAll {
     const n = parseInt(raw, 10)
     return Number.isFinite(n) ? n : undefined
   }
-  const persistRaw = d.persist_on_boot
-  const persistOnBoot = parseBoolLike(persistRaw, true)
   const masterSupported = parseBoolLike(d.wifi_onoff_supported, Object.prototype.hasOwnProperty.call(d, 'wifi_onoff'))
   const masterEnabled = parseBoolLike(d.wifi_onoff, true)
   const wifi6Supported = parseBoolLike(d.wifi6_supported, Object.prototype.hasOwnProperty.call(d, 'wifi6_switch'))
@@ -691,7 +688,6 @@ function mapWifi(d: Record<string, unknown>): WifiAll {
       clients: d.clients_5g as number | undefined,
     },
     guest_ssid: d.guest_ssid as string | undefined,
-    persist_on_boot: persistOnBoot,
     master_supported: masterSupported,
     master_enabled: masterEnabled,
     wifi6_supported: wifi6Supported,
