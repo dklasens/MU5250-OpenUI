@@ -147,9 +147,19 @@ export interface UsbModeCapability {
   function?: string
   note?: string
 }
+export interface UsbLink {
+  negotiated?: string
+  negotiated_label?: string
+  negotiated_mbps?: number
+  max?: string
+  max_label?: string
+  max_mbps?: number
+  at_full_speed?: boolean
+}
 export interface UsbStatus {
   active_mode: UsbMode | null
   default_mode?: UsbMode
+  link?: UsbLink
   ncm_persist_on_boot?: boolean
   supported_modes: string[]
   experimental_modes?: string[]

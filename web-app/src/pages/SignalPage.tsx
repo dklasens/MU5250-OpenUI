@@ -81,8 +81,8 @@ function CellInfoTable({ carriers, tech }: { carriers: CarrierComponent[]; tech:
   return (
     <div className={isNR ? 'mb-4' : ''}>
       <p className={`mb-2 text-[9px] font-bold uppercase tracking-widest ${isNR ? 'text-purple-600' : 'text-slds-blue'}`}>{isNR ? 'NR 5G' : 'LTE'} Carriers</p>
-      <div className="relative">
-      <div className="overflow-x-auto">
+
+      <div className="hidden sm:block overflow-x-auto">
         <table className="w-full text-left text-sm">
           <thead>
             <tr className="border-b border-gray-200/60 text-gray-500">
@@ -146,7 +146,57 @@ function CellInfoTable({ carriers, tech }: { carriers: CarrierComponent[]; tech:
           </tbody>
         </table>
       </div>
-      <div className="pointer-events-none absolute inset-y-0 right-0 w-6 bg-gradient-to-l from-white to-transparent sm:hidden" />
+
+      <div className="space-y-2 sm:hidden">
+        {sorted.map((c, i) => {
+          const isPcc = c.label === 'PCC'
+          const metrics = [
+            { label: 'RSRP', value: c.rsrp, color: rsrpColor(c.rsrp) },
+            { label: 'RSRQ', value: c.rsrq, color: rsrqColor(c.rsrq) },
+            { label: 'SINR', value: c.sinr, color: sinrColor(c.sinr) },
+            { label: 'RSSI', value: c.rssi, color: 'text-gray-600' },
+          ]
+          return (
+            <div key={i} className={`rounded-xl border p-3 ${isPcc
+              ? (isNR ? 'border-purple-200 bg-purple-50/60' : 'border-slds-blue/30 bg-slds-blue/5')
+              : 'border-gray-200 bg-white'}`}>
+              <div className="mb-2.5 flex items-center gap-2">
+                <span className={`rounded-lg px-2 py-0.5 text-[9px] font-bold border shadow-sm ${isPcc
+                  ? (isNR ? 'bg-purple-100 text-purple-700 border-purple-200' : 'bg-slds-blue/10 text-slds-blue border-slds-blue/30')
+                  : 'bg-gray-50 text-gray-600 border-gray-200'}`}>
+                  {c.label}
+                </span>
+                <span className={`text-base font-bold ${isNR ? 'text-purple-600' : 'text-slds-blue'}`}>{c.band}</span>
+                <div className="ml-auto flex flex-wrap justify-end gap-1">
+                  {c.ul_configured !== undefined && (
+                    <span className={`rounded-md px-1.5 py-0.5 text-[9px] font-bold border ${c.ul_configured ? 'bg-green-100 text-green-700 border-green-200' : 'bg-gray-100 text-gray-500 border-gray-200'}`}>
+                      UL {c.ul_configured ? '✓' : '✗'}
+                    </span>
+                  )}
+                  {c.active !== undefined && (
+                    <span className={`rounded-md px-1.5 py-0.5 text-[9px] font-bold border ${c.active ? 'bg-green-100 text-green-700 border-green-200' : 'bg-gray-100 text-gray-500 border-gray-200'}`}>
+                      {c.active ? 'Active' : 'Idle'}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="grid grid-cols-4 gap-2">
+                {metrics.map(m => (
+                  <div key={m.label}>
+                    <p className="text-[9px] font-bold uppercase tracking-widest text-gray-500">{m.label}</p>
+                    <p className={`text-sm font-bold ${m.color}`}>{m.value ?? '—'}</p>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-2.5 flex flex-wrap gap-x-4 gap-y-1 border-t border-gray-200/60 pt-2 text-[11px] text-gray-500">
+                <span>PCI <span className="font-medium text-gray-700">{c.pci}</span></span>
+                <span>{isNR ? 'ARFCN' : 'EARFCN'} <span className="font-medium text-gray-700">{c.earfcn}</span></span>
+                <span>BW <span className="font-medium text-gray-700">{c.bandwidth}</span></span>
+                {c.freq != null && <span>Freq <span className="font-medium text-gray-700">{c.freq.toFixed(1)} MHz</span></span>}
+              </div>
+            </div>
+          )
+        })}
       </div>
     </div>
   )
@@ -215,15 +265,17 @@ export default function SignalPage() {
               {hasNR ? `${current.nr_carriers.length} NR` : ''}
               {hasNR && hasLTE ? ' + ' : ''}
               {hasLTE ? `${current.lte_carriers.length} LTE` : ''}
-              {' '}({totalCarriers} total)
+              {hasNR && hasLTE ? ` (${totalCarriers} total)` : ''}
             </p>
           </div>
           <div>
             <p className="text-[9px] font-bold text-gray-500 uppercase tracking-widest">Bandwidth</p>
             <p className="text-sm font-bold text-gray-900">{formatBandwidthMHz(totalBw)}</p>
-            <p className="text-[10px] text-gray-500">
-              {hasNR ? `NR ${formatBandwidthMHz(nrBw)}` : ''}{hasNR && hasLTE ? ' + ' : ''}{hasLTE ? `LTE ${formatBandwidthMHz(lteBw)}` : ''}
-            </p>
+            {hasNR && hasLTE && (
+              <p className="text-[10px] text-gray-500">
+                NR {formatBandwidthMHz(nrBw)} + LTE {formatBandwidthMHz(lteBw)}
+              </p>
+            )}
           </div>
           <div>
             <p className="text-[9px] font-bold text-gray-500 uppercase tracking-widest">Bands</p>
@@ -246,7 +298,14 @@ export default function SignalPage() {
         </Card>
       )}
 
-      <Card title="Signal Quality Reference">
+      <details className="group bg-white rounded-2xl shadow-macos-lg border border-black/5">
+        <summary className="flex cursor-pointer list-none items-center justify-between rounded-2xl px-4 py-4 sm:px-6 [&::-webkit-details-marker]:hidden">
+          <h2 className="text-sm font-bold text-gray-900">Signal Quality Reference</h2>
+          <svg className="h-4 w-4 text-gray-400 transition-transform group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+        </summary>
+        <div className="border-t border-black/5 px-4 py-5 sm:px-6">
         <div className="grid grid-cols-1 gap-4 text-sm md:grid-cols-3">
           <div>
             <p className="mb-1.5 font-bold text-gray-900">RSRP (dBm)</p>
@@ -276,7 +335,8 @@ export default function SignalPage() {
             </div>
           </div>
         </div>
-      </Card>
+        </div>
+      </details>
     </div>
   )
 }

@@ -33,8 +33,21 @@ pub fn enforce_usb_mode_on_boot() {
         return;
     }
 
+    // Powering the device off while it stays plugged in soft-reboots into a
+    // charging state with no WAN. Re-presenting the NCM tether there makes the
+    // tethered host route all traffic through a dead link. Skip enforcement in
+    // that state, mirroring the stock Wi-Fi boot guard (zte_start_wlan_at_boot.sh).
+    if is_power_off_charging() {
+        return;
+    }
+
     thread::spawn(|| {
         wait_for_usb_boot_ready(Duration::from_secs(75));
+        // Re-check: mode_main_state can still be settling early in boot, and the
+        // readiness wait above can run for up to 75s.
+        if is_power_off_charging() {
+            return;
+        }
         if detect_active_usb_mode() == Some("ncm") {
             let _ = fs::remove_file(NCM_LAST_ERROR_PATH);
             return;
@@ -49,6 +62,38 @@ pub fn enforce_usb_mode_on_boot() {
             }
         }
     });
+}
+
+/// Stock power-off-while-charging detection. When the device is switched off but
+/// left plugged into USB, it soft-reboots into a charging state where
+/// `zwrt_zte_mc_tmp.mode.mode_main_state` reads one of these values. The stock
+/// Wi-Fi boot script guards on the same values; we mirror it so NCM persistence
+/// doesn't re-present the tether to a host that has no WAN behind it.
+fn is_power_off_charging() -> bool {
+    is_power_off_charging_state(read_mode_main_state().as_deref())
+}
+
+fn is_power_off_charging_state(state: Option<&str>) -> bool {
+    matches!(
+        state,
+        Some("mode_power_off_charger") | Some("mode_power_off_unreal")
+    )
+}
+
+fn read_mode_main_state() -> Option<String> {
+    let output = Command::new("uci")
+        .args(["get", "zwrt_zte_mc_tmp.mode.mode_main_state"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
 }
 
 fn wait_for_usb_boot_ready(max: Duration) {
@@ -234,6 +279,57 @@ fn supported_modes() -> Vec<&'static str> {
     modes
 }
 
+/// Map a Linux UDC speed string (`current_speed`/`maximum_speed`) to a friendly
+/// USB generation label and its line rate in Mbit/s.
+fn usb_speed_label(speed: &str) -> Option<(&'static str, f64)> {
+    match speed {
+        "low-speed" => Some(("USB 1.0", 1.5)),
+        "full-speed" => Some(("USB 1.1", 12.0)),
+        "high-speed" => Some(("USB 2.0", 480.0)),
+        "super-speed" => Some(("USB 3.0", 5000.0)),
+        "super-speed-plus" => Some(("USB 3.1 Gen2", 10000.0)),
+        _ => None,
+    }
+}
+
+/// Negotiated vs. maximum USB link speed reported by the device controller. The
+/// negotiated value reflects the weakest of {controller, cable, host port}, so a
+/// 10 Gbit/s cable reads `super-speed-plus` while a USB 2.0 cable reads
+/// `high-speed` even though the SDX75 dwc3 controller can do SuperSpeed+.
+fn usb_link_info() -> Option<Value> {
+    let udc = read_trimmed(UDC_PATH).or_else(first_udc_name)?;
+    let base = format!("/sys/class/udc/{udc}");
+    let negotiated = read_trimmed(&format!("{base}/current_speed"));
+    let max = read_trimmed(&format!("{base}/maximum_speed"));
+    if negotiated.is_none() && max.is_none() {
+        return None;
+    }
+
+    let mut link = Map::new();
+    let mut neg_mbps = None;
+    if let Some(n) = negotiated {
+        if let Some((label, mbps)) = usb_speed_label(&n) {
+            link.insert("negotiated_label".into(), json!(label));
+            link.insert("negotiated_mbps".into(), json!(mbps));
+            neg_mbps = Some(mbps);
+        }
+        link.insert("negotiated".into(), json!(n));
+    }
+    let mut max_mbps = None;
+    if let Some(m) = max {
+        if let Some((label, mbps)) = usb_speed_label(&m) {
+            link.insert("max_label".into(), json!(label));
+            link.insert("max_mbps".into(), json!(mbps));
+            max_mbps = Some(mbps);
+        }
+        link.insert("max".into(), json!(m));
+    }
+    if let (Some(n), Some(mx)) = (neg_mbps, max_mbps) {
+        link.insert("at_full_speed".into(), json!(n >= mx));
+    }
+    Some(Value::Object(link))
+}
+
 pub fn usb_status(_state: &AppState) -> (u16, Value) {
     let mut payload = match ubus::call("zwrt_bsp.usb", "list", Some("{}")) {
         Ok(Value::Object(m)) => m,
@@ -319,6 +415,9 @@ pub fn usb_status(_state: &AppState) -> (u16, Value) {
     );
     if let Some(last_error) = read_trimmed(NCM_LAST_ERROR_PATH) {
         payload.insert("ncm_last_error".into(), json!(last_error));
+    }
+    if let Some(link) = usb_link_info() {
+        payload.insert("link".into(), link);
     }
     (200, json!({"ok": true, "data": payload}))
 }
@@ -471,6 +570,25 @@ mod tests {
             parse_usb_default_mode(&json!({"usb_default_mode": true})),
             None
         );
+    }
+
+    #[test]
+    fn usb_speed_label_maps_known_speeds() {
+        assert_eq!(super::usb_speed_label("high-speed"), Some(("USB 2.0", 480.0)));
+        assert_eq!(
+            super::usb_speed_label("super-speed-plus"),
+            Some(("USB 3.1 Gen2", 10000.0))
+        );
+        assert_eq!(super::usb_speed_label("UNKNOWN"), None);
+    }
+
+    #[test]
+    fn power_off_charging_matches_stock_guard() {
+        assert!(super::is_power_off_charging_state(Some("mode_power_off_charger")));
+        assert!(super::is_power_off_charging_state(Some("mode_power_off_unreal")));
+        assert!(!super::is_power_off_charging_state(Some("mode_power_on_charger")));
+        assert!(!super::is_power_off_charging_state(Some("mode_power_on")));
+        assert!(!super::is_power_off_charging_state(None));
     }
 }
 
