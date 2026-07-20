@@ -22,3 +22,8 @@ mobile/ios/build/
 mobile/ios/*.xcworkspace
 mobile/ios/*.xcuserdata
 mobile/ios/DerivedData/
+
+# Local-only secrets / investigation artifacts (never push)
+/adb-lock-investigation.md
+/back_parameter
+/loopdebug-capture/

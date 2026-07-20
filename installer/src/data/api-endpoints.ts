@@ -194,12 +194,11 @@ export const apiCategories: APICategory[] = [
   },
   {
     name: "USB",
-    count: 3,
-    capabilities: "USB mode switching, powerbank control",
+    count: 2,
+    capabilities: "USB mode switching",
     endpoints: [
       { method: "GET", path: "/api/usb/status", description: "USB port status" },
       { method: "PUT", path: "/api/usb/mode", description: "Set USB mode" },
-      { method: "PUT", path: "/api/usb/powerbank", description: "Toggle powerbank mode" },
     ],
   },
   {

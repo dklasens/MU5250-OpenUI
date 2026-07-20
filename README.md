@@ -216,7 +216,6 @@ These endpoints back both status reporting and band-specific configuration such 
 
 - `GET /api/usb/status`
 - `PUT /api/usb/mode`
-- `PUT /api/usb/powerbank`
 
 ### SMS and SMS forwarding
 
@@ -500,7 +499,6 @@ The backend already exposes more than the current SPA navigation uses. At the ti
 - SIM PIN/PUK flows
 - voice call, USSD, and STK actions
 - router firewall, NAT, DMZ, UPnP, port-forward, QoS, VPN passthrough, and domain-filter controls
-- USB power-bank mode
 
 There is also an `SmsPage.tsx` in the web app source tree, but it is not currently mounted in the main app navigation.
 

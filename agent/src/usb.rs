@@ -531,17 +531,6 @@ pub fn usb_default_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
     }
 }
 
-pub fn usb_powerbank_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
-    let parsed: Value = match serde_json::from_slice(body) {
-        Ok(v) => v,
-        Err(_) => return (400, json!({"ok": false, "error": "invalid JSON"})),
-    };
-    match ubus::call("zwrt_bsp.powerbank", "set", Some(&parsed.to_string())) {
-        Ok(data) => (200, json!({"ok": true, "data": data})),
-        Err(e) => (503, json!({"ok": false, "error": e})),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::parse_usb_default_mode;
@@ -574,7 +563,10 @@ mod tests {
 
     #[test]
     fn usb_speed_label_maps_known_speeds() {
-        assert_eq!(super::usb_speed_label("high-speed"), Some(("USB 2.0", 480.0)));
+        assert_eq!(
+            super::usb_speed_label("high-speed"),
+            Some(("USB 2.0", 480.0))
+        );
         assert_eq!(
             super::usb_speed_label("super-speed-plus"),
             Some(("USB 3.1 Gen2", 10000.0))
@@ -584,9 +576,15 @@ mod tests {
 
     #[test]
     fn power_off_charging_matches_stock_guard() {
-        assert!(super::is_power_off_charging_state(Some("mode_power_off_charger")));
-        assert!(super::is_power_off_charging_state(Some("mode_power_off_unreal")));
-        assert!(!super::is_power_off_charging_state(Some("mode_power_on_charger")));
+        assert!(super::is_power_off_charging_state(Some(
+            "mode_power_off_charger"
+        )));
+        assert!(super::is_power_off_charging_state(Some(
+            "mode_power_off_unreal"
+        )));
+        assert!(!super::is_power_off_charging_state(Some(
+            "mode_power_on_charger"
+        )));
         assert!(!super::is_power_off_charging_state(Some("mode_power_on")));
         assert!(!super::is_power_off_charging_state(None));
     }

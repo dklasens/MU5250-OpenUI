@@ -18,14 +18,15 @@ if [ ! -d "web-app/dist" ]; then
     exit 1
 fi
 
-echo "Deploying dashboard to root@$DEVICE:$TARGET_DIR via SCP (Port $SSH_PORT)..."
+echo "Deploying dashboard to root@$DEVICE:$TARGET_DIR via SSH tar pipe (Port $SSH_PORT)..."
 
-# Use SCP to transfer the compiled dist/ directory to the device
-scp -P $SSH_PORT -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$HOME/.ssh/known_hosts.d/zte -r web-app/dist/* root@$DEVICE:$TARGET_DIR
+# The device's dropbear has no sftp-server and no remote scp binary, so scp
+# fails. Stream the dist tree over ssh instead (same pattern as setup.sh).
+SSH="ssh -p $SSH_PORT -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$HOME/.ssh/known_hosts.d/zte root@$DEVICE"
+tar czf - -C web-app/dist . | $SSH "mkdir -p $TARGET_DIR && tar xzf - -C $TARGET_DIR"
 
 # ZTE's patched uhttpd redirects mobile user-agents to /mobile.html.
 # Copy index.html so the SPA loads on phones and tablets too.
-SSH="ssh -p $SSH_PORT -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$HOME/.ssh/known_hosts.d/zte root@$DEVICE"
 $SSH "cp $TARGET_DIR/index.html $TARGET_DIR/mobile.html"
 
 echo "Dashboard deploy successful!"

@@ -393,7 +393,6 @@ pub fn route(
         (&Method::Get, "/api/usb/status") => usb::usb_status(state),
         (&Method::Put, "/api/usb/mode") => usb::usb_mode_set(state, body),
         (&Method::Put, "/api/usb/default") => usb::usb_default_set(state, body),
-        (&Method::Put, "/api/usb/powerbank") => usb::usb_powerbank_set(state, body),
         // Telephony — calls
         (&Method::Post, "/api/call/dial") => telephony::call_dial(state, body),
         (&Method::Post, "/api/call/hangup") => telephony::call_hangup(state),
