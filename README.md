@@ -91,7 +91,7 @@ firewall/QoS controls (see "API Features Not Yet Surfaced" in git history or
   boot persistence, optional dropbear SSH on port 2222)
 - `./deploy.sh` — push agent updates (SSH or adb)
 - `./deploy-dashboard.sh` — build and push the web app (ssh tar pipe)
-- `scripts/` — recon and unlock tooling (`zunlock.py`, `zbackup.py`, …)
+- `scripts/` — recon and unlock tooling (`zunlock.py`, `zharden.sh`, `zbackup.py`, …)
 
 ## Source of truth
 

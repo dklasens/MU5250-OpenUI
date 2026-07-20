@@ -30,9 +30,7 @@ across this ZTE platform generation. It is deliberately **not** published
 here, at the request of the researchers who shared it (publishing it gets it
 killed in the next firmware). To obtain it:
 
-- ask the community — e.g. the
-  [`amenekowo/mu5250_tweaking`](https://github.com/amenekowo/mu5250_tweaking)
-  issue tracker or related Discords, or
+- ask the community
 - extract it yourself from a rooted SDX75-era ZTE MBB unit: the web server
   binary (`zte_web`) builds the backup password in memory; the suffix is
   visible in its strings near the backup/restore code paths.
@@ -63,20 +61,36 @@ What happens on a full run:
 Your settings are preserved — the patched package is built from a backup
 taken seconds earlier.
 
-## After the unlock
+## After the unlock — the full sequence
 
-ADB is a bootstrap channel, not a good permanent interface (its composition
-drops USB networking on this firmware, and it only applies at boot). For a
-durable setup:
+Three commands, in order:
 
-- install dropbear (SSH) into `/data` — the rootfs is read-only except `/etc`
-  and `/data`, and `/data` survives firmware updates
-- start your services from `/etc/rc.local`
-- **protect against the next update**: FOTA preserves the UCI config dir and
-  `/data`, but not `rc.local` — hook boot via a `config include` section in
-  `/etc/config/firewall` pointing at a script in `/data` that self-heals the
-  rest, and disable auto-update:
-  `ubus call zwrt_zte_dm set_update_mode '{"dm_update_mode":"0"}'`
+```sh
+# 1. unlock → adbd (this repo, see above)
+python3 scripts/zunlock.py
+
+# 2. install the agent + boot persistence (answer "N" to its SSH step —
+#    dropbear is handled properly by the next step)
+bash setup.sh
+
+# 3. harden: dropbear SSH on :2222, rc.local cleanup (keeps USB tethering),
+#    FOTA-surviving self-heal bootstrap, dashboard instance on :8080,
+#    auto-update off. Idempotent — safe to re-run anytime.
+bash scripts/zharden.sh
+```
+
+Then deploy the dashboard: `bash deploy-dashboard.sh`.
+
+End state: every boot = stock ECM tethering + agent on `:9090` + SSH on
+`:2222` + dashboard on `:8080`. ADB remains available on demand via SSH
+(`echo 1 > /sys/class/android_usb/android0/usb_op` + reboot). Notes:
+
+- ADB is a bootstrap channel, not a good permanent interface on this
+  firmware (its composition drops USB networking, and it only applies at
+  boot) — SSH is the durable management channel.
+- The rootfs is read-only except `/etc` and `/data`; `/data` survives FOTA.
+  The bootstrap hook (`config include` in `/etc/config/firewall` → a script
+  in `/data`) re-heals the install after an update; `zharden.sh` sets it up.
 
 ## Safety
 
