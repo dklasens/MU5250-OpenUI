@@ -1,4 +1,4 @@
-# Open U60 Pro (MU5250-OpenUI)
+# MU5250-OpenUI
 
 Credit to: https://github.com/jesther-ai/open-u60-pro (which this project is based on).
 
