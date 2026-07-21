@@ -74,8 +74,8 @@ python3 scripts/zunlock.py
 bash setup.sh
 
 # 3. harden: dropbear SSH on :2222, rc.local cleanup (keeps USB tethering),
-#    FOTA-surviving self-heal bootstrap, dashboard instance on :8080,
-#    auto-update off. Idempotent — safe to re-run anytime.
+#    dashboard instance on :8080, auto-update off.
+#    Idempotent — safe to re-run anytime.
 bash scripts/zharden.sh
 ```
 
@@ -83,14 +83,33 @@ Then deploy the dashboard: `bash deploy-dashboard.sh`.
 
 End state: every boot = stock ECM tethering + agent on `:9090` + SSH on
 `:2222` + dashboard on `:8080`. ADB remains available on demand via SSH
-(`echo 1 > /sys/class/android_usb/android0/usb_op` + reboot). Notes:
+(`echo 1 > /sys/class/android_usb/android0/usb_op` + reboot).
+
+### Design rule: shell/ssh/adb only — no boot hooks outside rc.local
+
+`zharden.sh` deliberately does **not** install any boot-time hooks outside
+`/etc/rc.local`, and does not modify system services. An earlier version of
+this guide hooked boot through a `config include` section in the firewall
+service (chosen because the UCI config dir survives FOTA) — that approach is
+**deprecated and removed**: a hook inside a boot-critical service is a brick
+risk — if it stalls or its target moves, the device can hang before any
+recovery interface (ssh/adb/failsafe) is up, and recovery then requires
+hardware access.
+
+Trade-off accepted: `/etc/rc.local` is **not** preserved by FOTA, so a
+firmware update wipes the service lines (the device itself still boots
+cleanly to stock). Recovery after an update is simply re-running the three
+commands above (~15 minutes). That is the right price for never risking the
+boot path.
+
+Notes:
 
 - ADB is a bootstrap channel, not a good permanent interface on this
   firmware (its composition drops USB networking, and it only applies at
   boot) — SSH is the durable management channel.
-- The rootfs is read-only except `/etc` and `/data`; `/data` survives FOTA.
-  The bootstrap hook (`config include` in `/etc/config/firewall` → a script
-  in `/data`) re-heals the install after an update; `zharden.sh` sets it up.
+- The rootfs is read-only except `/etc` and `/data`; `/data` survives FOTA,
+  so your binaries and web assets persist — only the rc.local lines need
+  re-adding after an update.
 
 ## Safety
 

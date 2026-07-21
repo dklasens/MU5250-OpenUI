@@ -8,10 +8,16 @@
 #   1. installs dropbear SSH (port 2222, key auth) into /data
 #   2. cleans rc.local: keeps stock + agent/dropbear lines, removes usb_op
 #      write lines (so every boot = stock ECM tethering; adb on demand)
-#   3. installs the FOTA-surviving self-heal bootstrap (firewall include)
-#   4. adds the dashboard uhttpd instance on :8080
-#   5. disables FOTA auto-update
-#   6. offers a final reboot into the clean state
+#   3. adds the dashboard uhttpd instance on :8080
+#   4. disables FOTA auto-update
+#   5. offers a final reboot into the clean state
+#
+# DESIGN RULE (2026-07-21): shell/ssh/adb only. This script deliberately
+# installs NO boot hooks outside /etc/rc.local and does NOT modify system
+# services (no firewall includes/hooks). A boot-time hook that stalls or
+# fails can wedge the device before any recovery interface exists. rc.local
+# is not FOTA-preserved, so after a firmware update simply re-run:
+# zunlock.py -> setup.sh -> zharden.sh (~15 min, see COMMUNITY-UNLOCK.md).
 #
 # Usage: bash scripts/zharden.sh [--gw 192.168.0.1]
 set -euo pipefail
@@ -74,43 +80,7 @@ sed -i "/^echo [0-9] > .*usb_op/d" /etc/rc.local
 sh -n /etc/rc.local'
 ok "rc.local: agent+dropbear lines present, usb_op writes gone, syntax OK"
 
-# ── 3. self-heal bootstrap + firewall include ────────────────────────────
-rcmd 'cat > /data/local/tmp/bootstrap.sh' <<'EOF'
-#!/bin/sh
-{
-echo "$(date) bootstrap run"
-grep -qF 'start_zte_agent.sh' /etc/rc.local 2>/dev/null || sed -i '/^exit 0/i sh /data/local/tmp/start_zte_agent.sh' /etc/rc.local
-grep -qF 'start_dropbear.sh' /etc/rc.local 2>/dev/null || sed -i '/^exit 0/i sh /data/local/tmp/start_dropbear.sh' /etc/rc.local
-mkdir -p /etc/dropbear
-for f in authorized_keys dropbear_ed25519_host_key dropbear_rsa_host_key; do
-  [ -f /etc/dropbear/$f ] || cp /data/dropbear/$f /etc/dropbear/$f
-done
-chmod 700 /etc/dropbear; chmod 600 /etc/dropbear/* 2>/dev/null
-uci -q get uhttpd.dashboard >/dev/null 2>&1 || {
-  uci set uhttpd.dashboard=uhttpd
-  uci set uhttpd.dashboard.listen_http='0.0.0.0:8080'
-  uci set uhttpd.dashboard.home='/data/www'
-  uci set uhttpd.dashboard.no_dirlists='1'
-  uci commit uhttpd
-  /etc/init.d/uhttpd restart
-}
-pidof zte-agent >/dev/null 2>&1 || sh /data/local/tmp/start_zte_agent.sh
-pidof dropbear  >/dev/null 2>&1 || sh /data/local/tmp/start_dropbear.sh
-} >> /tmp/bootstrap.log 2>&1
-exit 0
-EOF
-rcmd 'chmod +x /data/local/tmp/bootstrap.sh && sh -n /data/local/tmp/bootstrap.sh'
-rcmd 'uci get firewall.zte_recovery >/dev/null 2>&1 || {
-  uci set firewall.zte_recovery=include
-  uci set firewall.zte_recovery.type=script
-  uci set firewall.zte_recovery.path=/data/local/tmp/bootstrap.sh
-  uci set firewall.zte_recovery.family=any
-  uci set firewall.zte_recovery.reload=1
-  uci commit firewall
-}'
-ok "bootstrap installed + firewall include registered (survives FOTA)"
-
-# ── 4. dashboard uhttpd instance ─────────────────────────────────────────
+# ── 3. dashboard uhttpd instance ─────────────────────────────────────────
 rcmd 'uci -q get uhttpd.dashboard >/dev/null 2>&1 || {
   uci set uhttpd.dashboard=uhttpd
   uci set uhttpd.dashboard.listen_http="0.0.0.0:8080"
@@ -120,11 +90,11 @@ rcmd 'uci -q get uhttpd.dashboard >/dev/null 2>&1 || {
 }; /etc/init.d/uhttpd restart 2>/dev/null; true'
 ok "dashboard instance on :8080"
 
-# ── 5. auto-update OFF ───────────────────────────────────────────────────
+# ── 4. auto-update OFF ───────────────────────────────────────────────────
 rcmd 'ubus call zwrt_zte_dm set_update_mode "{\"dm_update_mode\":\"0\"}" >/dev/null 2>&1; uci get zwrt_zte_dm.dm_update.dm_update_mode' | grep -q 0 \
   && ok "FOTA auto-update disabled" || warn "could not confirm dm_update_mode=0 — check manually"
 
-# ── 6. start dropbear now + verify ssh ───────────────────────────────────
+# ── 5. start dropbear now + verify ssh ───────────────────────────────────
 rcmd 'pidof dropbear >/dev/null 2>&1 || sh /data/local/tmp/start_dropbear.sh'
 sleep 2
 if $SSH 'echo ok' >/dev/null 2>&1; then
