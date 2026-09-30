@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { login, setToken } from '../data/client'
-import { ISignal } from '../icons'
+import { Mark } from '../ui/Mark'
 import { Button } from '../ui/controls'
 import { Segmented } from '../ui/controls'
 
@@ -41,16 +41,14 @@ export default function Login({ onAuthed }: { onAuthed: () => void }) {
     <div className="flex min-h-full items-center justify-center bg-bg p-6">
       <div className="w-full max-w-sm">
         <div className="mb-6 flex flex-col items-center text-center">
-          <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-accent text-white">
-            <ISignal size={24} />
-          </div>
-          <h1 className="text-lg font-bold text-ink">ZTE U60 Pro</h1>
-          <p className="mt-0.5 text-[13px] text-ink2">Sign in to the dashboard</p>
+          <Mark size={36} className="mb-3 text-ink" />
+          <h1 className="font-display text-xl font-semibold tracking-[-0.015em] text-ink">ZTE U60 Pro</h1>
+          <p className="mt-0.5 text-body text-ink2">Sign in to the dashboard</p>
         </div>
 
         <form
           onSubmit={submit}
-          className="space-y-4 rounded-xl border border-line/8 bg-surface p-5"
+          className="space-y-4 rounded-panel border border-line/8 bg-surface p-5"
         >
           {mobile && (
             <div className="flex justify-center">
@@ -76,7 +74,7 @@ export default function Login({ onAuthed }: { onAuthed: () => void }) {
               maxLength={6}
               value={pin}
               onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
-              className="tnum h-12 w-full rounded-lg border border-line/12 bg-surface2/50 pl-[0.4em] text-center text-2xl font-bold tracking-[0.4em] text-ink outline-none transition-colors placeholder:text-ink3 focus:border-accent/60"
+              className="tnum font-mono h-12 w-full rounded-ctl border border-line/12 bg-surface2/50 pl-[0.4em] text-center text-2xl font-medium tracking-[0.4em] text-ink outline-none transition-colors placeholder:text-ink3 focus:border-accent/60"
               placeholder="••••••"
               autoFocus
               autoComplete="one-time-code"
@@ -88,7 +86,7 @@ export default function Login({ onAuthed }: { onAuthed: () => void }) {
               type="password"
               value={pw}
               onChange={(e) => setPw(e.target.value)}
-              className="h-11 w-full rounded-lg border border-line/12 bg-surface2/50 px-3.5 text-sm text-ink outline-none transition-colors placeholder:text-ink3 focus:border-accent/60"
+              className="h-11 w-full rounded-ctl border border-line/12 bg-surface2/50 px-3.5 text-sm text-ink outline-none transition-colors placeholder:text-ink3 focus:border-accent/60"
               placeholder="Agent password"
               autoFocus
               autoComplete="current-password"

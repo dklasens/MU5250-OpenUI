@@ -2,6 +2,7 @@
 import { Suspense, useEffect, useState, type ReactNode } from 'react'
 import { useAlerts } from './HomeContext'
 import { IGauge, IGlobe, IHome, ISim, ISignal, IX, IMoon, ISun } from '../icons'
+import { Mark } from '../ui/Mark'
 import { Spinner } from '../ui/primitives'
 
 export type Group = 'home' | 'signal' | 'network' | 'modem' | 'system'
@@ -36,7 +37,7 @@ function AlertBanner() {
       {visible.map((a) => (
         <div
           key={a.message}
-          className={`flex items-center gap-2.5 rounded-lg border px-3 py-2 text-[13px] font-medium ${
+          className={`flex items-center gap-2.5 rounded-ctl border px-3 py-2 text-body font-medium ${
             a.level === 'error'
               ? 'border-danger/25 bg-danger/8 text-danger'
               : 'border-warn/25 bg-warn/8 text-warn'
@@ -85,12 +86,10 @@ export default function Shell({
       {/* Desktop sidebar */}
       <aside className="hidden w-56 shrink-0 flex-col border-r border-line/8 bg-surface lg:flex">
         <div className="flex items-center gap-2.5 px-5 pb-5 pt-6">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent text-white">
-            <ISignal size={17} />
-          </div>
+          <Mark size={22} className="shrink-0 text-ink" />
           <div className="min-w-0">
-            <p className="truncate text-[13px] font-bold text-ink">U60 Pro</p>
-            <p className="tnum truncate text-[11px] text-ink3">{window.location.hostname}</p>
+            <p className="truncate font-display text-sm font-semibold tracking-[-0.01em] text-ink">U60 Pro</p>
+            <p className="tnum truncate font-mono text-caption text-ink3">{window.location.hostname}</p>
           </div>
         </div>
 
@@ -99,11 +98,12 @@ export default function Shell({
             <button
               key={item.id}
               onClick={() => onNavigate(item.id)}
-              className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-semibold transition-colors ${
+              className={`flex w-full items-center gap-2.5 whitespace-nowrap rounded-ctl px-3 py-2 text-body font-semibold transition-colors ${
                 group === item.id
-                  ? 'bg-accent/10 text-accent'
+                  ? 'bg-surface2 text-ink [&>svg]:text-accent'
                   : 'text-ink2 hover:bg-surface2 hover:text-ink'
               }`}
+              aria-current={group === item.id ? 'page' : undefined}
             >
               {item.icon({ size: 17 })}
               {item.label}
@@ -114,7 +114,7 @@ export default function Shell({
         <div className="border-t border-line/8 px-5 py-3">
           <button
             onClick={onToggleTheme}
-            className="flex items-center gap-2 text-[12px] font-medium text-ink2 transition-colors hover:text-ink"
+            className="flex items-center gap-2 text-meta font-medium text-ink2 transition-colors hover:text-ink"
           >
             {themeIcon}
             {theme === 'dark' ? 'Light mode' : 'Dark mode'}
@@ -129,10 +129,10 @@ export default function Shell({
           className="flex min-h-12 shrink-0 items-center justify-between border-b border-line/8 bg-surface px-4 lg:hidden"
           style={{ paddingTop: 'env(safe-area-inset-top)' }}
         >
-          <span className="text-sm font-bold text-ink">{GROUP_TITLES[group]}</span>
+          <span className="font-display text-base font-semibold tracking-[-0.01em] text-ink">{GROUP_TITLES[group]}</span>
           <button
             onClick={onToggleTheme}
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-ink2 transition-colors hover:bg-surface2 hover:text-ink"
+            className="flex h-8 w-8 items-center justify-center rounded-ctl text-ink2 transition-colors hover:bg-surface2 hover:text-ink"
             aria-label="Toggle theme"
           >
             {themeIcon}
@@ -166,9 +166,10 @@ export default function Shell({
                 <button
                   key={item.id}
                   onClick={() => onNavigate(item.id)}
-                  className={`flex flex-1 flex-col items-center gap-0.5 pb-1.5 pt-2 text-[10px] font-semibold transition-colors ${
-                    active ? 'text-accent' : 'text-ink3 hover:text-ink2'
+                  className={`-mt-px flex flex-1 flex-col items-center gap-0.5 border-t-2 pb-1.5 pt-2 text-caption font-semibold transition-colors ${
+                    active ? 'border-accent text-ink [&>svg]:text-accent' : 'border-transparent text-ink3 hover:text-ink2'
                   }`}
+                  aria-current={active ? 'page' : undefined}
                 >
                   {item.icon({ size: 20 })}
                   {item.label}

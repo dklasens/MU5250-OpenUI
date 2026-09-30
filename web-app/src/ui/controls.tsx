@@ -7,11 +7,11 @@ import { Spinner } from './primitives'
 type ButtonVariant = 'primary' | 'subtle' | 'ghost' | 'danger' | 'outline'
 
 const BUTTON_VARIANTS: Record<ButtonVariant, string> = {
-  primary: 'bg-accent text-white hover:brightness-110 active:brightness-95',
-  subtle: 'bg-surface2 text-ink hover:bg-line/10 active:bg-line/15',
+  primary: 'bg-accent text-onaccent hover:brightness-110 active:brightness-95',
+  subtle: 'border border-line/12 bg-surface text-ink hover:bg-surface2 active:bg-line/10',
   ghost: 'text-ink2 hover:bg-surface2 hover:text-ink',
-  danger: 'bg-danger text-white hover:brightness-110 active:brightness-95',
-  outline: 'border border-line/15 text-ink hover:bg-surface2',
+  danger: 'bg-danger text-onaccent hover:brightness-110 active:brightness-95',
+  outline: 'border border-line/15 text-ink hover:border-accent/50 hover:bg-surface2',
 }
 
 export function Button({
@@ -27,10 +27,10 @@ export function Button({
   size?: 'sm' | 'md'
   loading?: boolean
 }) {
-  const sizing = size === 'sm' ? 'h-8 px-3 text-xs' : 'h-9 px-3.5 text-[13px]'
+  const sizing = size === 'sm' ? 'h-8 px-3 text-meta' : 'h-9 px-3.5 text-body'
   return (
     <button
-      className={`inline-flex items-center justify-center gap-1.5 rounded-lg font-semibold transition-[background-color,filter,opacity] disabled:pointer-events-none disabled:opacity-45 ${sizing} ${BUTTON_VARIANTS[variant]} ${className}`}
+      className={`inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-ctl font-semibold transition-[background-color,border-color,filter,opacity] disabled:pointer-events-none disabled:opacity-45 ${sizing} ${BUTTON_VARIANTS[variant]} ${className}`}
       disabled={disabled || loading}
       {...props}
     >
@@ -66,7 +66,7 @@ export function Toggle({
       }`}
     >
       <span
-        className={`inline-block h-[18px] w-[18px] transform rounded-full bg-white shadow-sm transition-transform ${
+        className={`inline-block h-[18px] w-[18px] transform rounded-full bg-onaccent shadow-sm transition-transform ${
           checked ? 'translate-x-[21px]' : 'translate-x-[3px]'
         }`}
       />
@@ -77,7 +77,7 @@ export function Toggle({
 // ── Form fields ───────────────────────────────────────────────────────────────
 
 const CONTROL_CLS =
-  'h-9 w-full rounded-lg border border-line/12 bg-surface2/50 px-3 text-[13px] text-ink outline-none transition-colors placeholder:text-ink3 focus:border-accent/60 focus:bg-surface disabled:opacity-50'
+  'h-9 w-full rounded-ctl border border-line/15 bg-surface px-3 text-body text-ink outline-none transition-colors placeholder:text-ink3 focus:border-accent disabled:opacity-50'
 
 export function Input(props: InputHTMLAttributes<HTMLInputElement>) {
   const { className = '', ...rest } = props
@@ -100,9 +100,9 @@ export function Select(props: SelectHTMLAttributes<HTMLSelectElement>) {
 export function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) {
   return (
     <label className="block">
-      <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-ink3">{label}</span>
+      <span className="label mb-1 block">{label}</span>
       {children}
-      {hint && <span className="mt-1 block text-[11px] text-ink3">{hint}</span>}
+      {hint && <span className="mt-1 block text-caption text-ink3">{hint}</span>}
     </label>
   )
 }
@@ -121,15 +121,15 @@ export function Segmented<T extends string>({
   disabled?: boolean
 }) {
   return (
-    <div className={`inline-flex rounded-lg bg-surface2 p-0.5 ${disabled ? 'opacity-50' : ''}`}>
+    <div className={`inline-flex rounded-ctl border border-line/12 bg-surface2 p-0.5 ${disabled ? 'opacity-50' : ''}`}>
       {options.map((o) => (
         <button
           key={o.value}
           type="button"
           disabled={disabled}
           onClick={() => onChange(o.value)}
-          className={`rounded-[7px] px-3 py-1.5 text-[12px] font-semibold transition-colors ${
-            value === o.value ? 'bg-surface text-ink shadow-sm' : 'text-ink2 hover:text-ink'
+          className={`whitespace-nowrap rounded-chip px-3 py-1.5 text-meta font-semibold transition-colors ${
+            value === o.value ? 'bg-surface text-ink ring-1 ring-line/12' : 'text-ink2 hover:text-ink'
           }`}
         >
           {o.label}

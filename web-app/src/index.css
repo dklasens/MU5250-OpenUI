@@ -2,33 +2,71 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Hallmark · genre: modern-minimal · theme: Cobalt (app-adapted) · macrostructure: readout band + panels
+ * design-system: design.md · designed-as-app · tone: technical instrument panel
+ * anchor hue: cobalt oklch(55% .20 258) · paper: cool near-white / graphite dark */
+
+/* Self-hosted Latin subsets only — the dashboard is served offline from the device. */
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 300 700;
+  src: url('@fontsource-variable/space-grotesk/files/space-grotesk-latin-wght-normal.woff2') format('woff2-variations');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 800;
+  src: url('@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2') format('woff2-variations');
+}
+
+/* Colours are OKLCH (see design.md) stored as sRGB channels for Tailwind's <alpha-value>. */
 :root {
-  --bg: 249 249 250;
-  --surface: 255 255 255;
-  --surface-2: 243 243 245;
-  --line: 17 20 24;
-  --text: 22 24 28;
-  --text-2: 100 105 115;
-  --text-3: 150 155 165;
-  --accent: 9 111 214;
-  --ok: 21 158 72;
-  --warn: 200 108 6;
-  --danger: 214 48 48;
+  --bg: 243 245 248;
+  --surface: 252 253 254;
+  --surface-2: 236 239 243;
+  --line: 25 32 41;
+  --text: 25 32 41;
+  --text-2: 71 78 87;
+  --text-3: 100 105 113;
+  --accent: 7 107 227;
+  --ok: 10 126 58;
+  --warn: 169 90 0;
+  --danger: 201 47 51;
+  --nr: 133 61 194;
+  --on-accent: 252 253 254;
+  --scrim: 11 14 20;
+  /* Graphite readout band — the page's one dark beat in light mode */
+  --band: 22 27 34;
+  --band-ink: 236 239 242;
+  --band-ink-2: 165 171 180;
+  --band-line: 236 239 242;
+  --band-accent: 86 159 255;
   color-scheme: light;
 }
 
 [data-theme='dark'] {
-  --bg: 9 11 14;
-  --surface: 17 20 25;
-  --surface-2: 27 31 38;
-  --line: 235 238 244;
-  --text: 230 232 236;
-  --text-2: 158 164 174;
-  --text-3: 104 110 120;
-  --accent: 76 158 235;
-  --ok: 72 199 116;
-  --warn: 233 165 67;
-  --danger: 240 101 101;
+  --bg: 11 14 20;
+  --surface: 18 22 28;
+  --surface-2: 28 33 40;
+  --line: 227 232 239;
+  --text: 232 235 241;
+  --text-2: 172 178 186;
+  --text-3: 135 141 149;
+  --accent: 86 159 255;
+  --ok: 93 200 121;
+  --warn: 245 174 75;
+  --danger: 242 113 106;
+  --nr: 187 138 239;
+  --on-accent: 11 14 20;
+  --scrim: 0 0 0;
+  --band: 27 34 45;
+  --band-ink: 236 239 242;
+  --band-ink-2: 172 178 186;
+  --band-line: 236 239 242;
+  --band-accent: 86 159 255;
   color-scheme: dark;
 }
 
@@ -38,11 +76,16 @@ body,
   height: 100%;
 }
 
+html,
+body {
+  overflow-x: clip;
+}
+
 body {
   margin: 0;
   background-color: rgb(var(--bg));
   color: rgb(var(--text));
-  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-family: theme('fontFamily.sans');
   -webkit-tap-highlight-color: transparent;
   -webkit-text-size-adjust: 100%;
   font-feature-settings: 'tnum' 0;
@@ -50,6 +93,49 @@ body {
 
 .tnum {
   font-variant-numeric: tabular-nums;
+}
+
+/* Mono UPPERCASE label — the machine-readout voice (design.md § Typography).
+   In the components layer so colour utilities (text-accent, text-nr…) override it. */
+@layer components {
+  .label {
+    font-family: theme('fontFamily.mono');
+    font-size: theme('fontSize.caption');
+    line-height: 1rem;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: rgb(var(--text-3));
+  }
+}
+
+/* Graphite readout band (design.md § Macrostructure). Re-scopes the dark palette so every
+   utility inside it — text-ok, label, Chip, SignalBars — stays legible in both themes. */
+@layer components {
+  .band {
+    --surface: var(--band);
+    --line: var(--band-line);
+    --text: var(--band-ink);
+    --text-2: var(--band-ink-2);
+    --text-3: 135 141 149;
+    --accent: var(--band-accent);
+    --ok: 93 200 121;
+    --warn: 245 174 75;
+    --danger: 242 113 106;
+    --nr: 187 138 239;
+    background-color: rgb(var(--band));
+    color: rgb(var(--band-ink));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 ::selection {

@@ -1,18 +1,13 @@
 import { useHome } from '../../app/HomeContext'
-import { formatBandwidthMHz, formatBytes, formatSpeed, formatUptime, modemMode, qualityBg, qualityLabel, qualityText, rsrpQuality, sumBandwidthMHz } from '../../format'
-import { IActivity, IBolt, IDownload, IRadio, IUpload } from '../../icons'
+import { formatBandwidthMHz, formatBytes, formatSpeed, formatUptime, modemMode, qualityLabel, qualityText, rsrpQuality, sumBandwidthMHz } from '../../format'
+import { IBolt, IDownload, IUpload } from '../../icons'
 import { Card, Chip, Meter, Row, SignalBars, Skeleton } from '../../ui/primitives'
 
 function PageSkeleton() {
   return (
     <div className="space-y-4">
       <Skeleton className="h-8 w-48" />
-      <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-        <Skeleton className="col-span-2 h-40 xl:col-span-1" />
-        <Skeleton className="h-40" />
-        <Skeleton className="h-40" />
-        <Skeleton className="h-40" />
-      </div>
+      <Skeleton className="h-64 xl:h-44" />
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
         <Skeleton className="h-48" />
         <Skeleton className="h-48" />
@@ -49,120 +44,92 @@ export default function HomePage() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-xl font-bold text-ink">Overview</h1>
-        <p className="mt-0.5 text-[13px] text-ink2">{signal?.carrier ?? 'Mobile broadband status'}</p>
+        <h1 className="hidden font-display text-2xl font-semibold tracking-[-0.015em] text-ink lg:block">Overview</h1>
+        <p className="lg:mt-0.5 text-body text-ink2">{signal?.carrier ?? 'Mobile broadband status'}</p>
       </div>
 
       {error && !data && (
         <Card>
-          <p className="text-[13px] text-danger">{error}</p>
+          <p className="text-body text-danger">{error}</p>
         </Card>
       )}
 
-      {/* Hero stats */}
-      <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-        <Card className="col-span-2 xl:col-span-1">
-          <div className="flex h-full flex-col justify-between gap-3">
-            <div className="flex items-start justify-between">
-              <div>
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-ink3">Signal strength</p>
-                <div className="mt-1.5 flex items-end gap-2">
-                  <span className={`tnum text-4xl font-bold leading-none ${qualityText(quality)}`}>
+      {/* Readout band — the page's one graphite beat. Hairline grid via gap-px on a line-tinted ground. */}
+      <section className="band overflow-hidden rounded-panel border border-line/10" aria-label="Live readouts">
+        <div className="grid grid-cols-6 gap-px bg-line/10 xl:grid-cols-5">
+          <div className="col-span-6 bg-band p-4 xl:col-span-2">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="label">Signal · RSRP</p>
+                <div className="mt-2 flex items-baseline gap-2">
+                  <span className={`tnum font-mono text-5xl font-medium leading-none tracking-[-0.03em] ${qualityText(quality)}`}>
                     {pccRsrp != null ? pccRsrp : '\u2014'}
                   </span>
-                  <span className="pb-0.5 text-[11px] font-medium text-ink3">dBm RSRP</span>
+                  <span className="font-display text-sm font-medium text-ink2">dBm</span>
                 </div>
-                <p className={`mt-1 text-[12px] font-semibold ${qualityText(quality)}`}>{qualityLabel(quality)}</p>
+                <p className={`mt-1.5 text-body font-semibold ${qualityText(quality)}`}>{qualityLabel(quality)}</p>
               </div>
               <SignalBars bars={signal?.signal_bars} large />
             </div>
-            <div className="flex flex-wrap items-center gap-1.5 border-t border-line/8 pt-2.5">
-              <span className={`h-2 w-2 rounded-full ${qualityBg(quality)}`} />
-              <span className="text-[12px] text-ink2">{signal?.signal_bars ?? 0}/5 bars</span>
-              {primary?.band && (
-                <Chip tone={primary.band.startsWith('n') ? 'nr' : 'lte'}>{primary.band}</Chip>
-              )}
-              {primary?.pci != null && primary.pci > 0 && (
-                <span className="tnum text-[11px] text-ink3">PCI {primary.pci}</span>
-              )}
+            <div className="tnum mt-4 flex flex-wrap items-center gap-x-3 gap-y-1.5 font-mono text-meta text-ink2">
+              {primary?.band && <Chip tone={primary.band.startsWith('n') ? 'nr' : 'lte'}>{primary.band}</Chip>}
+              {primary?.pci != null && primary.pci > 0 && <span>PCI {primary.pci}</span>}
+              <span>{signal?.signal_bars ?? 0}/5 bars</span>
             </div>
           </div>
-        </Card>
 
-        <Card>
-          <div className="flex h-full flex-col justify-between gap-3">
-            <div>
-              <div className="flex items-center gap-1.5 text-ink3">
-                <IRadio size={14} />
-                <p className="text-[10px] font-semibold uppercase tracking-wider">Modem mode</p>
-              </div>
-              <p className="tnum mt-2 text-3xl font-bold text-ink">{mode}</p>
-              <p className="mt-1 text-[12px] text-ink2">
-                {carrierCount} carrier{carrierCount !== 1 ? 's' : ''} active
+          <div className="col-span-6 bg-band p-4 sm:col-span-2 xl:col-span-1">
+            <p className="label">Throughput</p>
+            <div className="tnum mt-2 flex gap-x-6 font-mono font-medium text-ink sm:block sm:space-y-1.5">
+              <p className="flex items-center gap-1.5 text-base leading-none">
+                <IDownload size={14} className="shrink-0 text-ok" />
+                <span className="truncate">{speed ? formatSpeed(speed.rx_bps) : '\u2014'}</span>
+              </p>
+              <p className="flex items-center gap-1.5 text-base leading-none">
+                <IUpload size={14} className="shrink-0 text-accent" />
+                <span className="truncate">{speed ? formatSpeed(speed.tx_bps) : '\u2014'}</span>
               </p>
             </div>
-            <div className="flex flex-wrap gap-1.5 border-t border-line/8 pt-2.5">
-              {nrBw > 0 && <Chip tone="nr">NR {formatBandwidthMHz(nrBw)}</Chip>}
-              {lteBw > 0 && <Chip tone="lte">LTE {formatBandwidthMHz(lteBw)}</Chip>}
-              {totalBw <= 0 && <span className="text-[11px] text-ink3">No bandwidth reported</span>}
-            </div>
-          </div>
-        </Card>
-
-        <Card>
-          <div className="flex h-full flex-col justify-between gap-3">
-            <div>
-              <div className="flex items-center gap-1.5 text-ink3">
-                <IActivity size={14} />
-                <p className="text-[10px] font-semibold uppercase tracking-wider">Throughput</p>
-              </div>
-              <div className="mt-2 space-y-1.5">
-                <div className="flex items-center gap-1.5">
-                  <IDownload size={14} className="shrink-0 text-ok" />
-                  <span className="tnum text-lg font-bold leading-none text-ink">
-                    {speed ? formatSpeed(speed.rx_bps) : '\u2014'}
-                  </span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <IUpload size={14} className="shrink-0 text-accent" />
-                  <span className="tnum text-lg font-bold leading-none text-ink">
-                    {speed ? formatSpeed(speed.tx_bps) : '\u2014'}
-                  </span>
-                </div>
-              </div>
-            </div>
-            <p className="tnum border-t border-line/8 pt-2.5 text-[11px] text-ink3">
-              Peak {speed && speed.max_rx_bps > 0 ? formatSpeed(speed.max_rx_bps) : '\u2014'} down
+            <p className="tnum mt-3 truncate font-mono text-caption text-ink3">
+              Peak down {speed && speed.max_rx_bps > 0 ? formatSpeed(speed.max_rx_bps) : '\u2014'}
             </p>
           </div>
-        </Card>
 
-        <Card>
-          <div className="flex h-full flex-col justify-between gap-3">
-            <div>
-              <div className="flex items-center gap-1.5 text-ink3">
-                {battery?.charging ? <IBolt size={14} /> : <IRadio size={14} className="opacity-0" />}
-                <p className="text-[10px] font-semibold uppercase tracking-wider">Battery</p>
-              </div>
-              <p className="tnum mt-2 text-3xl font-bold text-ink">
-                {battery?.percent != null ? `${battery.percent}%` : '\u2014'}
-              </p>
-              <p className="mt-1 text-[12px] text-ink2">{battery?.charging ? 'Charging' : 'On battery'}</p>
+          <div className="col-span-3 bg-band p-4 sm:col-span-2 xl:col-span-1">
+            <p className="label">Mode</p>
+            <p className="tnum mt-2 font-mono text-2xl font-medium leading-none text-ink">{mode}</p>
+            <p className="mt-1.5 text-meta text-ink2">
+              {carrierCount} carrier{carrierCount !== 1 ? 's' : ''}
+            </p>
+            <div className="mt-3 flex flex-wrap gap-1">
+              {nrBw > 0 && <Chip tone="nr">NR {formatBandwidthMHz(nrBw)}</Chip>}
+              {lteBw > 0 && <Chip tone="lte">LTE {formatBandwidthMHz(lteBw)}</Chip>}
+              {totalBw <= 0 && <span className="text-caption text-ink3">No bandwidth</span>}
             </div>
-            <p className="tnum border-t border-line/8 pt-2.5 text-[11px] text-ink3">
+          </div>
+
+          <div className="col-span-3 bg-band p-4 sm:col-span-2 xl:col-span-1">
+            <p className="label flex items-center gap-1">
+              Battery {battery?.charging && <IBolt size={12} className="text-warn" />}
+            </p>
+            <p className="tnum mt-2 font-mono text-2xl font-medium leading-none text-ink">
+              {battery?.percent != null ? `${battery.percent}%` : '\u2014'}
+            </p>
+            <p className="mt-1.5 text-meta text-ink2">{battery?.charging ? 'Charging' : 'On battery'}</p>
+            <p className="tnum mt-3 truncate font-mono text-caption text-ink3">
               {battery?.voltage_mv ? `${(battery.voltage_mv / 1000).toFixed(2)} V` : '\u2014'}
               {battery?.temperature_c != null ? ` · ${battery.temperature_c.toFixed(1)}°C` : ''}
             </p>
           </div>
-        </Card>
-      </div>
+        </div>
+      </section>
 
       {/* Radio details */}
       {signal && (signal.lte_carriers.length > 0 || signal.nr_carriers.length > 0) && (
         <Card title="Carriers">
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             <div>
-              <p className="mb-1.5 text-[11px] font-bold uppercase tracking-wider text-accent">LTE</p>
+              <p className="label mb-1.5 text-accent">LTE</p>
               {signal.lte_carriers.length > 0 ? (
                 <div className="flex flex-wrap gap-1.5">
                   {signal.lte_carriers.map((c, i) => (
@@ -173,11 +140,11 @@ export default function HomePage() {
                   ))}
                 </div>
               ) : (
-                <p className="text-[13px] text-ink3">No active LTE carrier</p>
+                <p className="text-body text-ink3">No active LTE carrier</p>
               )}
             </div>
             <div>
-              <p className="mb-1.5 text-[11px] font-bold uppercase tracking-wider text-violet-600 dark:text-violet-400">
+              <p className="label mb-1.5 text-nr">
                 5G NR
               </p>
               {signal.nr_carriers.length > 0 ? (
@@ -190,7 +157,7 @@ export default function HomePage() {
                   ))}
                 </div>
               ) : (
-                <p className="text-[13px] text-ink3">No active NR carrier</p>
+                <p className="text-body text-ink3">No active NR carrier</p>
               )}
             </div>
           </div>
@@ -216,16 +183,16 @@ export default function HomePage() {
           <Row label="Uptime" value={formatUptime(device?.uptime_secs)} />
           <div className="mt-2 space-y-2 border-t border-line/8 pt-2.5">
             <div>
-              <div className="mb-1 flex justify-between text-[11px]">
+              <div className="mb-1 flex justify-between text-caption">
                 <span className="font-medium text-ink2">CPU</span>
-                <span className="tnum text-ink2">{cpu ? `${cpu.overall.toFixed(0)}%` : '\u2014'}</span>
+                <span className="tnum font-mono text-ink2">{cpu ? `${cpu.overall.toFixed(0)}%` : '\u2014'}</span>
               </div>
               <Meter pct={cpu?.overall ?? 0} />
             </div>
             <div>
-              <div className="mb-1 flex justify-between text-[11px]">
+              <div className="mb-1 flex justify-between text-caption">
                 <span className="font-medium text-ink2">Memory</span>
-                <span className="tnum text-ink2">{mem ? `${mem.usage_pct.toFixed(0)}%` : '\u2014'}</span>
+                <span className="tnum font-mono text-ink2">{mem ? `${mem.usage_pct.toFixed(0)}%` : '\u2014'}</span>
               </div>
               <Meter pct={mem?.usage_pct ?? 0} tone="bg-warn" />
             </div>
@@ -241,8 +208,8 @@ export default function HomePage() {
                 { label: 'Total', period: usage.total },
               ].map(({ label, period }) => (
                 <div key={label}>
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-ink3">{label}</p>
-                  <div className="tnum mt-0.5 flex gap-3 text-[13px] font-medium">
+                  <p className="label">{label}</p>
+                  <div className="tnum font-mono mt-0.5 flex gap-3 text-body font-medium">
                     <span className="flex items-center gap-1 text-ok">
                       <IDownload size={12} /> {formatBytes(period.rx_bytes)}
                     </span>
@@ -254,7 +221,7 @@ export default function HomePage() {
               ))}
             </div>
           ) : (
-            <p className="text-[13px] text-ink3">Not available</p>
+            <p className="text-body text-ink3">Not available</p>
           )}
         </Card>
       </div>

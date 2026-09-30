@@ -106,8 +106,8 @@ function LoggerCard({
 
   return (
     <Card title={title}>
-      <p className="mb-3 text-[12px] text-ink2">{description} Logs stop at 8 MiB and flush at least every 30 seconds.</p>
-      {status?.last_error && <p role="alert" className="mb-3 text-[12px] text-danger">{status.last_error}</p>}
+      <p className="mb-3 text-meta text-ink2">{description} Logs stop at 8 MiB and flush at least every 30 seconds.</p>
+      {status?.last_error && <p role="alert" className="mb-3 text-meta text-danger">{status.last_error}</p>}
 
       {!isRunning && (
         <div className="mb-3 grid grid-cols-2 gap-2">
@@ -150,18 +150,18 @@ function LoggerCard({
       {status && (
         <div className="mt-3 grid grid-cols-3 gap-3 border-t border-line/8 pt-3">
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-ink3">Status</p>
-            <p className={`mt-0.5 text-[13px] font-bold ${isRunning ? 'text-ok' : 'text-ink3'}`}>
+            <p className="label">Status</p>
+            <p className={`mt-0.5 text-body font-bold ${isRunning ? 'text-ok' : 'text-ink3'}`}>
               {isRunning ? 'Running' : 'Stopped'}
             </p>
           </div>
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-ink3">{countLabel}</p>
-            <p className="tnum mt-0.5 text-[13px] font-bold text-ink">{status.samples ?? status.events ?? 0}</p>
+            <p className="label">{countLabel}</p>
+            <p className="tnum font-mono mt-0.5 text-body font-bold text-ink">{status.samples ?? status.events ?? 0}</p>
           </div>
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-ink3">Elapsed</p>
-            <p className="tnum mt-0.5 text-[13px] font-medium text-ink2">
+            <p className="label">Elapsed</p>
+            <p className="tnum font-mono mt-0.5 text-body font-medium text-ink2">
               {formatDuration(status.elapsed_secs)} / {formatDuration(status.duration_secs)}
             </p>
           </div>
@@ -216,12 +216,12 @@ function AtConsole() {
         </span>
       }
     >
-      <div role="alert" className="mb-3 rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-[12px] text-warn">
+      <div role="alert" className="mb-3 rounded-ctl border border-warn/30 bg-warn/10 px-3 py-2 text-meta text-warn">
         <strong>Safety warning:</strong> AT commands bypass the normal settings APIs and talk directly to the modem.
         Only use documented read-only queries; commands that write, reset, reboot, or alter radio state can interrupt service
         or persist after the agent exits.
       </div>
-      <p className="mb-3 text-[12px] text-ink2">
+      <p className="mb-3 text-meta text-ink2">
         The agent accepts only its read-only command allowlist.
         {port !== undefined && (
           <span className={port ? 'text-ok' : 'text-warn'}>{port ? ` Port: ${port}` : ' No AT port detected.'}</span>
@@ -230,7 +230,7 @@ function AtConsole() {
 
       <div
         ref={outputRef}
-        className="mb-3 h-72 overflow-y-auto rounded-lg border border-line/8 bg-surface2/50 p-3 font-mono text-[12px]"
+        className="mb-3 h-72 overflow-y-auto rounded-ctl border border-line/8 bg-surface2/50 p-3 font-mono text-meta"
       >
         {history.length === 0 && (
           <p className="text-ink3">No commands sent yet. Try: AT, ATI, AT+COPS?, AT+CSQ, AT+CGDCONT?</p>
@@ -256,7 +256,7 @@ function AtConsole() {
             }
           }}
           placeholder="AT+COPS?"
-          className="h-9 min-w-0 flex-1 rounded-lg border border-line/12 bg-surface2/50 px-3 font-mono text-[13px] text-ink outline-none transition-colors placeholder:text-ink3 focus:border-accent/60"
+          className="h-9 min-w-0 flex-1 rounded-ctl border border-line/12 bg-surface2/50 px-3 font-mono text-body text-ink outline-none transition-colors placeholder:text-ink3 focus:border-accent/60"
           autoComplete="off"
         />
         <Select value={timeout} onChange={(e) => setTimeout_(Number(e.target.value))} className="!w-20">
@@ -335,10 +335,10 @@ function Processes() {
       ) : (
         <>
           <div className="px-4 pb-3">
-            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-surface2/70 px-3 py-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-ctl bg-surface2/70 px-3 py-2.5">
               <div className="min-w-0">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-ink3">Optional services</p>
-                <p className="tnum mt-0.5 text-[13px] text-ink2">
+                <p className="label">Optional services</p>
+                <p className="tnum font-mono mt-0.5 text-body text-ink2">
                   {data.bloat_count} of {data.total_count} processes ·{' '}
                   <span className="font-semibold text-ink">{formatBytes(data.bloat_rss_kb * 1024)}</span> RAM ·{' '}
                   {data.bloat_cpu_pct.toFixed(1)}% CPU
@@ -357,9 +357,9 @@ function Processes() {
           </div>
 
           <div className="overflow-x-auto px-4 pb-3">
-          <table className="w-full text-[12px]">
+          <table className="w-full text-meta">
             <thead>
-              <tr className="border-b border-line/8 text-left text-[11px] uppercase tracking-wider text-ink3">
+              <tr className="label border-b border-line/8 text-left">
                 <th className="pb-1.5 pr-3 font-semibold">PID</th>
                 <th className="pb-1.5 pr-3 font-semibold">Name</th>
                 <th className="pb-1.5 pr-3 text-right font-semibold">CPU%</th>
@@ -369,13 +369,13 @@ function Processes() {
             <tbody>
               {procs.map((p) => (
                 <tr key={p.pid} className="border-b border-line/6 last:border-0">
-                  <td className="tnum py-1 pr-3 text-ink3">{p.pid}</td>
+                  <td className="tnum font-mono py-1 pr-3 text-ink3">{p.pid}</td>
                   <td className="max-w-[180px] truncate py-1 pr-3 font-medium text-ink">
                     {p.name}
-                    {p.is_bloat && <span className="ml-1.5 text-[10px] font-semibold text-warn">bloat</span>}
+                    {p.is_bloat && <span className="ml-1.5 text-caption font-semibold text-warn">bloat</span>}
                   </td>
-                  <td className="tnum py-1 pr-3 text-right text-ink2">{p.cpu_pct.toFixed(1)}</td>
-                  <td className="tnum py-1 text-right text-ink2">{formatBytes(p.rss_kb * 1024)}</td>
+                  <td className="tnum font-mono py-1 pr-3 text-right text-ink2">{p.cpu_pct.toFixed(1)}</td>
+                  <td className="tnum font-mono py-1 text-right text-ink2">{formatBytes(p.rss_kb * 1024)}</td>
                 </tr>
               ))}
             </tbody>

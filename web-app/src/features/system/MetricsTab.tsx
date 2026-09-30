@@ -19,7 +19,7 @@ interface MetricsData {
 function ThermalBar({ label, value }: { label: string; value?: number | null }) {
   if (value == null) {
     return (
-      <div className="flex justify-between text-[12px]">
+      <div className="flex justify-between text-meta">
         <span className="text-ink2">{label}</span>
         <span className="font-medium text-ink3">Unavailable</span>
       </div>
@@ -29,9 +29,9 @@ function ThermalBar({ label, value }: { label: string; value?: number | null }) 
   const tone = value > 80 ? 'bg-danger' : value > 60 ? 'bg-warn' : 'bg-ok'
   return (
     <div>
-      <div className="mb-0.5 flex justify-between text-[12px]">
+      <div className="mb-0.5 flex justify-between text-meta">
         <span className="text-ink2">{label}</span>
-        <span className={`tnum font-semibold ${tempColorClass(value)}`}>{value.toFixed(1)}°C</span>
+        <span className={`tnum font-mono font-semibold ${tempColorClass(value)}`}>{value.toFixed(1)}°C</span>
       </div>
       <Meter pct={pct} tone={tone} />
     </div>
@@ -68,11 +68,11 @@ function ChargeControlCard() {
   return (
     <Card title="Charge control">
       <div className="space-y-3">
-        {cc.last_error && <p role="alert" className="text-[12px] text-danger">{cc.last_error}</p>}
+        {cc.last_error && <p role="alert" className="text-meta text-danger">{cc.last_error}</p>}
         <div className="flex items-center justify-between gap-2">
           <div className="min-w-0">
-            <p className="text-[13px] font-medium text-ink">Charging</p>
-            <p className="truncate text-[12px] text-ink2">
+            <p className="text-body font-medium text-ink">Charging</p>
+            <p className="truncate text-meta text-ink2">
               {cc.battery_status ?? 'Battery data unavailable'}{cc.capacity != null ? ` at ${cc.capacity}%` : ''}{cc.manual_override ? ' · manual override' : ''}
             </p>
           </div>
@@ -90,8 +90,8 @@ function ChargeControlCard() {
         <div className="border-t border-line/8 pt-3">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-[13px] font-medium text-ink">Charge limit</p>
-              <p className="text-[12px] text-ink2">
+              <p className="text-body font-medium text-ink">Charge limit</p>
+              <p className="text-meta text-ink2">
                 Stop at limit, resume {cc.hysteresis}% below
               </p>
             </div>
@@ -119,17 +119,17 @@ function ChargeControlCard() {
               onKeyUp={(e) => apply({ charge_limit: Number(e.currentTarget.value) })}
               className="w-full accent-[rgb(var(--accent))] disabled:opacity-40"
             />
-            <span className="tnum w-12 text-right text-[13px] font-semibold text-ink">
+            <span className="tnum font-mono w-12 text-right text-body font-semibold text-ink">
               {limit ?? cc.charge_limit}%
             </span>
           </div>
         </div>
 
-        <p className="text-[11px] leading-snug text-ink3">
+        <p className="text-caption leading-snug text-ink3">
           Firmware note: the charger switch is inverted (enable = stop). Charging auto-resumes when the
           charger is unplugged or the limit is disabled.
         </p>
-        {!cc.available && <p className="text-[12px] font-medium text-warn">Battery and charger hardware data are unavailable; controls are disabled.</p>}
+        {!cc.available && <p className="text-meta font-medium text-warn">Battery and charger hardware data are unavailable; controls are disabled.</p>}
       </div>
     </Card>
   )
@@ -203,7 +203,7 @@ export default function MetricsTab() {
           </div>
         ) : (
           <div className="space-y-2.5">
-            <p className="text-[12px] font-medium text-warn">Thermal sensors are unavailable.</p>
+            <p className="text-meta font-medium text-warn">Thermal sensors are unavailable.</p>
             {['CPU (avg)', 'Modem (Q6 DSP)', 'Modem SS', 'PA (power amplifier)', 'SDR (radio)', 'Battery', 'USB', 'Ethernet PHY', 'PMIC', 'Board (XO)'].map((label) => <ThermalBar key={label} label={label} />)}
           </div>
         )}
@@ -214,9 +214,9 @@ export default function MetricsTab() {
           {cpu ? (
             <div className="space-y-3">
               <div>
-                <div className="mb-1 flex justify-between text-[13px]">
+                <div className="mb-1 flex justify-between text-body">
                   <span className="font-medium text-ink">Overall</span>
-                  <span className="tnum text-ink2">{cpu.overall.toFixed(1)}%</span>
+                  <span className="tnum font-mono text-ink2">{cpu.overall.toFixed(1)}%</span>
                 </div>
                 <Meter pct={cpu.overall} />
               </div>
@@ -224,9 +224,9 @@ export default function MetricsTab() {
                 <div className="space-y-1.5 border-t border-line/8 pt-2.5">
                   {cpu.cores.map((pct, i) => (
                     <div key={i}>
-                      <div className="mb-0.5 flex justify-between text-[11px]">
+                      <div className="mb-0.5 flex justify-between text-caption">
                         <span className="text-ink3">Core {i}</span>
-                        <span className="tnum text-ink2">{pct.toFixed(1)}%</span>
+                        <span className="tnum font-mono text-ink2">{pct.toFixed(1)}%</span>
                       </div>
                       <Meter pct={pct} />
                     </div>
@@ -235,23 +235,23 @@ export default function MetricsTab() {
               )}
             </div>
           ) : (
-            <p className="text-[13px] text-ink3">No CPU data</p>
+            <p className="text-body text-ink3">No CPU data</p>
           )}
         </Card>
 
         <Card title="Memory">
           {mem ? (
             <div>
-              <div className="mb-1 flex justify-between text-[13px]">
+              <div className="mb-1 flex justify-between text-body">
                 <span className="text-ink2">Usage</span>
-                <span className="tnum text-ink">
+                <span className="tnum font-mono text-ink">
                   {formatBytes(mem.used_kb * 1024)} / {formatBytes(mem.total_kb * 1024)} ({mem.usage_pct.toFixed(0)}%)
                 </span>
               </div>
               <Meter pct={mem.usage_pct} tone="bg-warn" />
             </div>
           ) : (
-            <p className="text-[13px] text-ink3">No memory data</p>
+            <p className="text-body text-ink3">No memory data</p>
           )}
         </Card>
       </div>
@@ -260,13 +260,13 @@ export default function MetricsTab() {
         {battery?.available ? (
           <div className="space-y-3">
             <div>
-              <div className="mb-1 flex justify-between text-[13px]">
-                <span className="tnum font-semibold text-ink">{battery.capacity != null ? `${battery.capacity}%` : 'Unavailable'}</span>
+              <div className="mb-1 flex justify-between text-body">
+                <span className="tnum font-mono font-semibold text-ink">{battery.capacity != null ? `${battery.capacity}%` : 'Unavailable'}</span>
                 <span className="text-ink2">{battery.status ?? 'Unavailable'}</span>
               </div>
               {battery.capacity != null && <Meter pct={battery.capacity} tone={battery.capacity > 20 ? 'bg-ok' : 'bg-danger'} />}
             </div>
-            <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-[13px]">
+            <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-body">
               <Info label="Power" value={formatMeasure(battery.power_mw, (value) => `${(value / 1000).toFixed(2)} W`)} />
               <Info label="Voltage" value={formatMeasure(battery.voltage_mv, (value) => `${(value / 1000).toFixed(3)} V`)} />
               <Info label="Current" value={formatMeasure(battery.current_ma, (value) => `${value} mA`)} />
@@ -283,26 +283,26 @@ export default function MetricsTab() {
             </div>
           </div>
         ) : (
-          <p className="text-[13px] font-medium text-warn">Battery hardware data are unavailable.</p>
+          <p className="text-body font-medium text-warn">Battery hardware data are unavailable.</p>
         )}
       </Card>
 
       <div className="space-y-3">
         <Card title="Battery health">
           {battery?.available ? (
-            <div className="space-y-1.5 text-[13px]">
+            <div className="space-y-1.5 text-body">
               <KV k="Health" v={battery.health ?? 'Unavailable'} />
               <KV k="Capacity" v={battery.charge_full_mah != null && battery.charge_full_design_mah != null ? `${battery.charge_full_mah.toLocaleString()} / ${battery.charge_full_design_mah.toLocaleString()} mAh` : 'Unavailable'} />
               {batteryHealth != null && (
                 <div className="flex justify-between">
                   <span className="text-ink2">Capacity retention</span>
-                  <span className={`tnum font-semibold ${batteryHealth > 80 ? 'text-ok' : 'text-warn'}`}>{batteryHealth}%</span>
+                  <span className={`tnum font-mono font-semibold ${batteryHealth > 80 ? 'text-ok' : 'text-warn'}`}>{batteryHealth}%</span>
                 </div>
               )}
               <KV k="OCV" v={formatMeasure(battery.voltage_ocv_mv, (value) => `${(value / 1000).toFixed(3)} V`)} />
             </div>
           ) : (
-          <p className="text-[13px] font-medium text-warn">Battery health measures are unavailable.</p>
+          <p className="text-body font-medium text-warn">Battery health measures are unavailable.</p>
           )}
         </Card>
 
@@ -315,8 +315,8 @@ export default function MetricsTab() {
 function Info({ label, value, cls = 'text-ink' }: { label: string; value: string; cls?: string }) {
   return (
     <div className="min-w-0">
-      <p className="text-[10px] font-semibold uppercase tracking-wider text-ink3">{label}</p>
-      <p className={`tnum truncate font-medium ${cls}`}>{value}</p>
+      <p className="label">{label}</p>
+      <p className={`tnum font-mono truncate font-medium ${cls}`}>{value}</p>
     </div>
   )
 }
@@ -325,7 +325,7 @@ function KV({ k, v }: { k: string; v: string }) {
   return (
     <div className="flex justify-between">
       <span className="text-ink2">{k}</span>
-      <span className="tnum font-medium text-ink">{v}</span>
+      <span className="tnum font-mono font-medium text-ink">{v}</span>
     </div>
   )
 }

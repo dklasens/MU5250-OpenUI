@@ -12,8 +12,8 @@ export default function SystemGroup({ onLogout }: { onLogout: () => void }) {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-xl font-bold text-ink">System</h1>
-        <p className="mt-0.5 text-[13px] text-ink2">Health metrics, diagnostic tools and device controls</p>
+        <h1 className="hidden font-display text-2xl font-semibold tracking-[-0.015em] text-ink lg:block">System</h1>
+        <p className="lg:mt-0.5 text-body text-ink2">Health metrics, diagnostic tools and device controls</p>
       </div>
 
       <Tabs

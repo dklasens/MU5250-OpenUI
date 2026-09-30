@@ -16,10 +16,10 @@ export function Card({
   pad?: boolean
 }) {
   return (
-    <section className={`rounded-xl border border-line/8 bg-surface ${className}`}>
+    <section className={`rounded-panel border border-line/8 bg-surface ${className}`}>
       {title != null && (
         <header className="flex items-center justify-between gap-2 border-b border-line/8 px-4 py-2.5">
-          <h2 className="text-[13px] font-semibold text-ink">{title}</h2>
+          <h2 className="font-display text-sm font-semibold tracking-[-0.01em] text-ink">{title}</h2>
           {action}
         </header>
       )}
@@ -43,9 +43,9 @@ export function Stat({
 }) {
   return (
     <div className="min-w-0">
-      <p className="text-[10px] font-semibold uppercase tracking-wider text-ink3">{label}</p>
-      <p className={`tnum mt-0.5 truncate text-xl font-semibold ${tone}`}>{value}</p>
-      {sub != null && <p className="mt-0.5 truncate text-[11px] text-ink3">{sub}</p>}
+      <p className="label">{label}</p>
+      <p className={`tnum mt-1 truncate font-mono text-xl font-medium ${tone}`}>{value}</p>
+      {sub != null && <p className="mt-0.5 truncate text-meta text-ink3">{sub}</p>}
     </div>
   )
 }
@@ -62,10 +62,10 @@ export function Row({
   wrap?: boolean
 }) {
   return (
-    <div className="flex items-baseline justify-between gap-3 py-0.5 text-[13px]">
+    <div className="flex items-baseline justify-between gap-3 py-0.5 text-body">
       <span className="shrink-0 text-ink2">{label}</span>
       <span
-        className={`min-w-0 text-right font-medium text-ink ${mono ? 'font-mono text-[12px]' : ''} ${
+        className={`min-w-0 text-right text-ink ${mono ? 'tnum font-mono text-meta' : 'font-medium'} ${
           wrap ? 'break-all' : 'truncate'
         }`}
       >
@@ -78,19 +78,19 @@ export function Row({
 export type ChipTone = 'default' | 'lte' | 'nr' | 'ok' | 'warn' | 'danger' | 'accent'
 
 const CHIP_TONES: Record<ChipTone, string> = {
-  default: 'border-line/10 bg-surface2 text-ink2',
-  lte: 'border-accent/25 bg-accent/10 text-accent',
-  nr: 'border-violet-500/25 bg-violet-500/10 text-violet-600 dark:text-violet-400',
+  default: 'border-line/12 bg-transparent text-ink2',
+  lte: 'border-accent/30 bg-accent/8 text-accent',
+  nr: 'border-nr/30 bg-nr/8 text-nr',
   ok: 'border-ok/25 bg-ok/10 text-ok',
   warn: 'border-warn/25 bg-warn/10 text-warn',
   danger: 'border-danger/25 bg-danger/10 text-danger',
-  accent: 'border-accent/25 bg-accent/10 text-accent',
+  accent: 'border-accent/30 bg-accent/8 text-accent',
 }
 
 export function Chip({ children, tone = 'default' }: { children: ReactNode; tone?: ChipTone }) {
   return (
     <span
-      className={`inline-flex items-center gap-1 whitespace-nowrap rounded-md border px-1.5 py-0.5 text-[11px] font-semibold ${CHIP_TONES[tone]}`}
+      className={`inline-flex items-center gap-1 whitespace-nowrap rounded-chip border px-1.5 py-px font-mono text-caption font-medium ${CHIP_TONES[tone]}`}
     >
       {children}
     </span>
@@ -116,7 +116,7 @@ export function Spinner({ size = 16, className = '' }: { size?: number; classNam
 }
 
 export function Skeleton({ className = '' }: { className?: string }) {
-  return <div className={`animate-pulse rounded-lg bg-surface2 ${className}`} />
+  return <div className={`animate-pulse rounded-ctl bg-surface2 ${className}`} />
 }
 
 export function Empty({ icon, title, body }: { icon?: ReactNode; title: string; body?: string }) {

@@ -42,7 +42,7 @@ export function Toaster() {
       {items.map((t) => (
         <div
           key={t.id}
-          className={`pointer-events-auto flex max-w-sm items-center gap-2 rounded-lg border px-3 py-2 text-[13px] font-medium shadow-lg ${
+          className={`pointer-events-auto flex max-w-sm items-center gap-2 rounded-ctl border px-3 py-2 text-body font-medium shadow-sm ${
             t.kind === 'ok'
               ? 'border-ok/25 bg-surface text-ink'
               : 'border-danger/30 bg-surface text-danger'
@@ -114,17 +114,17 @@ export function ConfirmHost() {
   if (!opts) return null
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/45 p-4 sm:items-center"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-scrim/45 p-4 sm:items-center"
       onClick={() => close(false)}
     >
       <div
-        className="w-full max-w-sm rounded-xl border border-line/10 bg-surface p-4 shadow-xl"
+        className="w-full max-w-sm rounded-panel border border-line/12 bg-surface p-4"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
       >
-        <h3 className="text-sm font-semibold text-ink">{opts.title}</h3>
-        {opts.body && <p className="mt-1.5 text-[13px] leading-relaxed text-ink2">{opts.body}</p>}
+        <h3 className="font-display text-sm font-semibold text-ink">{opts.title}</h3>
+        {opts.body && <p className="mt-1.5 text-body leading-relaxed text-ink2">{opts.body}</p>}
         <div className="mt-4 flex justify-end gap-2">
           <Button variant="ghost" onClick={() => close(false)}>
             Cancel

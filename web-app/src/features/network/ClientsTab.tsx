@@ -81,12 +81,12 @@ export default function ClientsTab() {
               { label: 'Ethernet', count: grouped.ethernet.length, icon: <ICable size={15} /> },
               { label: 'Other', count: grouped.other.length, icon: <ILaptop size={15} /> },
             ].map((g) => (
-              <div key={g.label} className="rounded-lg bg-surface2/70 px-3 py-2.5">
+              <div key={g.label} className="rounded-ctl bg-surface2/70 px-3 py-2.5">
                 <div className="flex items-center gap-1.5 text-ink3">
                   {g.icon}
-                  <p className="text-[10px] font-semibold uppercase tracking-wider">{g.label}</p>
+                  <p className="label">{g.label}</p>
                 </div>
-                <p className="tnum mt-1 text-2xl font-bold text-ink">{g.count}</p>
+                <p className="tnum font-mono mt-1 text-2xl font-medium text-ink">{g.count}</p>
               </div>
             ))}
           </div>
@@ -95,10 +95,27 @@ export default function ClientsTab() {
 
       {grouped.wifi.length > 0 && (
         <Card title={`Wi-Fi (${grouped.wifi.length})`} pad={false}>
-          <div className="overflow-x-auto px-4 pb-3">
-            <table className="w-full text-[13px]">
+          {/* Mobile: one row per client instead of a six-column table */}
+          <ul className="divide-y divide-line/6 px-4 sm:hidden">
+            {grouped.wifi.map((c) => (
+              <li key={c.mac} className="py-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="min-w-0 truncate text-body font-medium text-ink">{c.hostname || '—'}</span>
+                  <Chip tone={c.wifi_band === '5 GHz' ? 'accent' : 'ok'}>{c.wifi_band ?? 'Wi-Fi'}</Chip>
+                </div>
+                <div className="tnum font-mono mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-meta text-ink2">
+                  <span className="font-mono">{c.ip ?? '—'}</span>
+                  <span>{c.signal_dbm != null ? `${c.signal_dbm} dBm` : '—'}</span>
+                  <span>{formatWifiLink(c)}</span>
+                </div>
+                <p className="tnum mt-0.5 font-mono text-caption text-ink3">{c.mac}</p>
+              </li>
+            ))}
+          </ul>
+          <div className="hidden overflow-x-auto px-4 pb-3 sm:block">
+            <table className="w-full text-body">
               <thead>
-                <tr className="border-b border-line/8 text-left text-[11px] uppercase tracking-wider text-ink3">
+                <tr className="label border-b border-line/8 text-left">
                   <th className={TH_CLS}>Hostname</th>
                   <th className={TH_CLS}>IP</th>
                   <th className={TH_CLS}>Radio</th>
@@ -111,15 +128,15 @@ export default function ClientsTab() {
                 {grouped.wifi.map((c) => (
                   <tr key={c.mac} className="border-b border-line/6 last:border-0">
                     <td className={`${TD_CLS} font-medium text-ink`}>{c.hostname || '\u2014'}</td>
-                    <td className={`${TD_CLS} tnum font-mono text-[12px] text-ink2`}>{c.ip ?? '\u2014'}</td>
+                    <td className={`${TD_CLS} tnum font-mono text-meta text-ink2`}>{c.ip ?? '\u2014'}</td>
                     <td className={TD_CLS}>
                       <Chip tone={c.wifi_band === '5 GHz' ? 'accent' : 'ok'}>{c.wifi_band ?? 'Wi-Fi'}</Chip>
                     </td>
-                    <td className={`${TD_CLS} tnum text-ink2`}>
+                    <td className={`${TD_CLS} tnum font-mono text-ink2`}>
                       {c.signal_dbm != null ? `${c.signal_dbm} dBm` : '\u2014'}
                     </td>
-                    <td className={`${TD_CLS} tnum text-ink2`}>{formatWifiLink(c)}</td>
-                    <td className="tnum py-2 font-mono text-[11px] text-ink3">{c.mac}</td>
+                    <td className={`${TD_CLS} tnum font-mono text-ink2`}>{formatWifiLink(c)}</td>
+                    <td className="tnum py-2 font-mono text-caption text-ink3">{c.mac}</td>
                   </tr>
                 ))}
               </tbody>
@@ -132,9 +149,9 @@ export default function ClientsTab() {
         <Card title={`USB-C (${grouped.usb.length})`} pad={false}>
           <div className="px-4 pb-3">
             {usbLink && (
-              <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg bg-surface2/70 px-3 py-2">
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-ink3">Tether link</span>
-                <span className="text-[13px] font-bold text-ink">
+              <div className="mb-3 flex flex-wrap items-center gap-2 rounded-ctl bg-surface2/70 px-3 py-2">
+                <span className="label">Tether link</span>
+                <span className="text-body font-bold text-ink">
                   {usbLink.negotiated_label ?? usbLink.negotiated ?? 'Unknown'}
                   {usbNegotiatedRate && <span className="font-medium text-ink2"> · {usbNegotiatedRate}</span>}
                 </span>
@@ -148,9 +165,9 @@ export default function ClientsTab() {
             )}
             {grouped.usb.length > 0 ? (
               <div className="overflow-x-auto">
-                <table className="w-full text-[13px]">
+                <table className="w-full text-body">
                   <thead>
-                    <tr className="border-b border-line/8 text-left text-[11px] uppercase tracking-wider text-ink3">
+                    <tr className="label border-b border-line/8 text-left">
                       <th className={TH_CLS}>Hostname</th>
                       <th className={TH_CLS}>IP</th>
                       <th className={TH_CLS}>Interface</th>
@@ -161,16 +178,16 @@ export default function ClientsTab() {
                     {grouped.usb.map((c) => (
                       <tr key={c.mac} className="border-b border-line/6 last:border-0">
                         <td className={`${TD_CLS} font-medium text-ink`}>{c.hostname || '\u2014'}</td>
-                        <td className={`${TD_CLS} tnum font-mono text-[12px] text-ink2`}>{c.ip ?? '\u2014'}</td>
-                        <td className={`${TD_CLS} tnum font-mono text-[12px] text-ink2`}>{c.interface ?? '\u2014'}</td>
-                        <td className="tnum py-2 font-mono text-[11px] text-ink3">{c.mac}</td>
+                        <td className={`${TD_CLS} tnum font-mono text-meta text-ink2`}>{c.ip ?? '\u2014'}</td>
+                        <td className={`${TD_CLS} tnum font-mono text-meta text-ink2`}>{c.interface ?? '\u2014'}</td>
+                        <td className="tnum py-2 font-mono text-caption text-ink3">{c.mac}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
             ) : (
-              <p className="text-[13px] text-ink3">No USB-C clients connected</p>
+              <p className="text-body text-ink3">No USB-C clients connected</p>
             )}
           </div>
         </Card>
@@ -179,9 +196,9 @@ export default function ClientsTab() {
       {grouped.ethernet.length > 0 && (
         <Card title={`Ethernet (${grouped.ethernet.length})`} pad={false}>
           <div className="overflow-x-auto px-4 pb-3">
-            <table className="w-full text-[13px]">
+            <table className="w-full text-body">
               <thead>
-                <tr className="border-b border-line/8 text-left text-[11px] uppercase tracking-wider text-ink3">
+                <tr className="label border-b border-line/8 text-left">
                   <th className={TH_CLS}>Hostname</th>
                   <th className={TH_CLS}>IP</th>
                   <th className={TH_CLS}>Speed</th>
@@ -192,9 +209,9 @@ export default function ClientsTab() {
                 {grouped.ethernet.map((c) => (
                   <tr key={c.mac} className="border-b border-line/6 last:border-0">
                     <td className={`${TD_CLS} font-medium text-ink`}>{c.hostname || '\u2014'}</td>
-                    <td className={`${TD_CLS} tnum font-mono text-[12px] text-ink2`}>{c.ip ?? '\u2014'}</td>
-                    <td className={`${TD_CLS} tnum text-ink2`}>{formatLinkMbps(c.wired_link_mbps)}</td>
-                    <td className="tnum py-2 font-mono text-[11px] text-ink3">{c.mac}</td>
+                    <td className={`${TD_CLS} tnum font-mono text-meta text-ink2`}>{c.ip ?? '\u2014'}</td>
+                    <td className={`${TD_CLS} tnum font-mono text-ink2`}>{formatLinkMbps(c.wired_link_mbps)}</td>
+                    <td className="tnum py-2 font-mono text-caption text-ink3">{c.mac}</td>
                   </tr>
                 ))}
               </tbody>
@@ -206,9 +223,9 @@ export default function ClientsTab() {
       {grouped.other.length > 0 && (
         <Card title={`Other (${grouped.other.length})`} pad={false}>
           <div className="overflow-x-auto px-4 pb-3">
-            <table className="w-full text-[13px]">
+            <table className="w-full text-body">
               <thead>
-                <tr className="border-b border-line/8 text-left text-[11px] uppercase tracking-wider text-ink3">
+                <tr className="label border-b border-line/8 text-left">
                   <th className={TH_CLS}>Hostname</th>
                   <th className={TH_CLS}>IP</th>
                   <th className="pb-1.5 font-semibold">MAC</th>
@@ -218,8 +235,8 @@ export default function ClientsTab() {
                 {grouped.other.map((c) => (
                   <tr key={c.mac} className="border-b border-line/6 last:border-0">
                     <td className={`${TD_CLS} font-medium text-ink`}>{c.hostname || '\u2014'}</td>
-                    <td className={`${TD_CLS} tnum font-mono text-[12px] text-ink2`}>{c.ip ?? '\u2014'}</td>
-                    <td className="tnum py-2 font-mono text-[11px] text-ink3">{c.mac}</td>
+                    <td className={`${TD_CLS} tnum font-mono text-meta text-ink2`}>{c.ip ?? '\u2014'}</td>
+                    <td className="tnum py-2 font-mono text-caption text-ink3">{c.mac}</td>
                   </tr>
                 ))}
               </tbody>

@@ -169,10 +169,10 @@ function LanSection() {
           />
         </Field>
       </div>
-      <div className="mt-3 flex items-center justify-between rounded-lg bg-surface2/60 px-3 py-2.5">
+      <div className="mt-3 flex items-center justify-between rounded-ctl bg-surface2/60 px-3 py-2.5">
         <div>
-          <p className="text-[13px] font-semibold text-ink">DHCP server</p>
-          <p className="text-[11px] text-ink3">Assign addresses to LAN and Wi-Fi clients</p>
+          <p className="text-body font-semibold text-ink">DHCP server</p>
+          <p className="text-caption text-ink3">Assign addresses to LAN and Wi-Fi clients</p>
         </div>
         <Toggle checked={lan.dhcp_enabled} onChange={(dhcp_enabled) => setLan((l) => ({ ...l, dhcp_enabled }))} label="DHCP server" />
       </div>

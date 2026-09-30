@@ -170,11 +170,11 @@ function BandCard({
             <span
               className={`h-2 w-2 rounded-full ${masterEnabled ? (band.enabled ? 'bg-ok' : 'bg-danger') : 'bg-warn'}`}
             />
-            <span className="text-[13px] text-ink2">
+            <span className="text-body text-ink2">
               {masterEnabled ? (band.enabled ? 'Enabled' : 'Disabled') : 'Master off'}
             </span>
             {band.clients != null && (
-              <span className="text-[12px] text-ink3">
+              <span className="text-meta text-ink3">
                 {band.clients} client{band.clients !== 1 ? 's' : ''}
               </span>
             )}
@@ -182,7 +182,7 @@ function BandCard({
           <Toggle checked={band.enabled} onChange={toggleRadio} disabled={busy} label={`Toggle ${label} radio`} />
         </div>
         {!masterEnabled && (
-          <p className="text-[12px] text-warn">Global Wi-Fi is off. Band settings are still saved.</p>
+          <p className="text-meta text-warn">Global Wi-Fi is off. Band settings are still saved.</p>
         )}
 
         {editing ? (
@@ -230,7 +230,7 @@ function BandCard({
               </Field>
               <div className="flex items-end gap-2 pb-1.5">
                 <Toggle checked={hidden} onChange={setHidden} label="Hidden SSID" />
-                <span className="text-[12px] font-medium text-ink2">Hidden SSID</span>
+                <span className="text-meta font-medium text-ink2">Hidden SSID</span>
               </div>
             </div>
           </>
@@ -244,18 +244,18 @@ function BandCard({
               <Info label="Security" value={band.security ?? '\u2014'} />
               <Info label="Hidden" value={band.hidden ? 'Yes' : 'No'} />
             </div>
-            <div className="rounded-lg bg-surface2/70 px-3 py-2">
-              <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-ink3">Channel insights</p>
+            <div className="rounded-ctl bg-surface2/70 px-3 py-2">
+              <p className="label mb-1">Channel insights</p>
               {insights.length > 0 ? (
                 <div className="space-y-1">
                   {insights.map((insight, i) => (
-                    <p key={i} className="text-[12px] text-ink2">
+                    <p key={i} className="text-meta text-ink2">
                       {insight}
                     </p>
                   ))}
                 </div>
               ) : (
-                <p className="text-[12px] text-ink3">No obvious channel conflicts detected.</p>
+                <p className="text-meta text-ink3">No obvious channel conflicts detected.</p>
               )}
             </div>
           </>
@@ -268,8 +268,8 @@ function BandCard({
 function Info({ label, value, strong = false, mono = false }: { label: string; value: string; strong?: boolean; mono?: boolean }) {
   return (
     <div className="min-w-0">
-      <p className="text-[10px] font-semibold uppercase tracking-wider text-ink3">{label}</p>
-      <p className={`truncate text-[13px] ${strong ? 'font-semibold text-ink' : 'text-ink2'} ${mono ? 'font-mono text-[12px]' : ''}`}>
+      <p className="label">{label}</p>
+      <p className={`truncate text-body ${strong ? 'font-semibold text-ink' : 'text-ink2'} ${mono ? 'font-mono text-meta' : ''}`}>
         {value}
       </p>
     </div>
@@ -352,8 +352,8 @@ export default function WifiTab() {
       <Card title="Global Wi-Fi">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <p className="text-[13px] font-medium text-ink">Master switch</p>
-            <p className="mt-0.5 text-[12px] text-ink2">
+            <p className="text-body font-medium text-ink">Master switch</p>
+            <p className="mt-0.5 text-meta text-ink2">
               {!wifi.master_supported
                 ? 'This firmware does not expose a reliable global Wi-Fi toggle.'
                 : wifi.master_enabled
@@ -376,7 +376,7 @@ export default function WifiTab() {
       </Card>
 
       <Card title="Band sync">
-        <p className="mb-2.5 text-[12px] text-ink2">
+        <p className="mb-2.5 text-meta text-ink2">
           Copy SSID, password, security and hidden-state from one band to the other.
         </p>
         <div className="flex flex-wrap gap-2">
@@ -396,7 +396,7 @@ export default function WifiTab() {
 
       {wifi.guest_ssid && (
         <Card title="Guest network">
-          <p className="text-[13px] text-ink2">
+          <p className="text-body text-ink2">
             SSID: <span className="font-semibold text-ink">{wifi.guest_ssid}</span>
           </p>
         </Card>

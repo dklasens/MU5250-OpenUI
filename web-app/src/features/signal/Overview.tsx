@@ -35,7 +35,7 @@ function Tip({ text, children }: { text: string; children: React.ReactNode }) {
         createPortal(
           <span
             role="tooltip"
-            className="fixed z-50 w-56 rounded-lg border border-line/10 bg-surface px-2.5 py-1.5 text-[11px] leading-snug text-ink2 shadow-lg"
+            className="fixed z-50 w-56 rounded-ctl border border-line/10 bg-surface px-2.5 py-1.5 text-caption leading-snug text-ink2 shadow-lg"
             style={
               below
                 ? { left, top: pos.bottom + 8 }
@@ -80,19 +80,19 @@ function CarrierTable({ carriers, tech }: { carriers: CarrierComponent[]; tech: 
   if (carriers.length === 0) return null
   const isNR = tech === 'NR'
   const sorted = [...carriers].sort((a, b) => (a.label === 'PCC' ? -1 : b.label === 'PCC' ? 1 : 0))
-  const bandText = isNR ? 'text-violet-600 dark:text-violet-400' : 'text-accent'
+  const bandText = isNR ? 'text-nr' : 'text-accent'
 
   return (
     <div className={isNR ? 'mb-4' : ''}>
-      <p className={`mb-2 text-[11px] font-bold uppercase tracking-wider ${bandText}`}>
+      <p className={`label mb-2 ${bandText}`}>
         {isNR ? 'NR 5G' : 'LTE'} carriers
       </p>
 
       {/* Desktop table */}
       <div className="hidden overflow-x-auto sm:block">
-        <table className="w-full text-left text-[13px]">
+        <table className="w-full text-left text-body">
           <thead>
-            <tr className="border-b border-line/8 text-[11px] uppercase tracking-wider text-ink3">
+            <tr className="label border-b border-line/8">
               <th className="pb-1.5 pr-3 font-semibold">Type</th>
               <th className="pb-1.5 pr-3 font-semibold">Band</th>
               <th className="pb-1.5 pr-3 font-semibold">Status</th>
@@ -137,22 +137,22 @@ function CarrierTable({ carriers, tech }: { carriers: CarrierComponent[]; tech: 
                   <td className="py-1.5 pr-3 text-ink3">
                     <CarrierStatus carrier={c} empty={'\u2014'} />
                   </td>
-                  <td className="tnum py-1.5 pr-3 text-ink">{c.pci}</td>
-                  <td className="tnum py-1.5 pr-3 text-ink">{c.earfcn}</td>
-                  <td className="tnum py-1.5 pr-3 text-ink2">{c.bandwidth}</td>
-                  <td className="tnum py-1.5 pr-3 text-ink2">
+                  <td className="tnum font-mono py-1.5 pr-3 text-ink">{c.pci}</td>
+                  <td className="tnum font-mono py-1.5 pr-3 text-ink">{c.earfcn}</td>
+                  <td className="tnum font-mono py-1.5 pr-3 text-ink2">{c.bandwidth}</td>
+                  <td className="tnum font-mono py-1.5 pr-3 text-ink2">
                     {c.freq ? `${c.freq.toFixed(1)} MHz` : '\u2014'}
                   </td>
-                  <td className={`tnum py-1.5 pr-3 font-semibold ${qualityText(rsrpQuality(c.rsrp))}`}>
+                  <td className={`tnum font-mono py-1.5 pr-3 font-semibold ${qualityText(rsrpQuality(c.rsrp))}`}>
                     {c.rsrp ?? '\u2014'}
                   </td>
-                  <td className={`tnum py-1.5 pr-3 font-medium ${rsrqColorClass(c.rsrq)}`}>
+                  <td className={`tnum font-mono py-1.5 pr-3 font-medium ${rsrqColorClass(c.rsrq)}`}>
                     {c.rsrq ?? '\u2014'}
                   </td>
-                  <td className={`tnum py-1.5 pr-3 font-medium ${sinrColorClass(c.sinr)}`}>
+                  <td className={`tnum font-mono py-1.5 pr-3 font-medium ${sinrColorClass(c.sinr)}`}>
                     {c.sinr ?? '\u2014'}
                   </td>
-                  <td className="tnum py-1.5 text-ink2">{c.rssi ?? '\u2014'}</td>
+                  <td className="tnum font-mono py-1.5 text-ink2">{c.rssi ?? '\u2014'}</td>
                 </tr>
               )
             })}
@@ -173,7 +173,7 @@ function CarrierTable({ carriers, tech }: { carriers: CarrierComponent[]; tech: 
           return (
             <div
               key={i}
-              className={`rounded-lg border p-3 ${isPcc ? 'border-accent/25 bg-accent/4' : 'border-line/8'}`}
+              className={`rounded-ctl border p-3 ${isPcc ? (isNR ? 'border-nr/30' : 'border-accent/30') : 'border-line/8'}`}
             >
               <div className="mb-2 flex items-center gap-2">
                 <Chip tone={isPcc ? (isNR ? 'nr' : 'lte') : 'default'}>{c.label}</Chip>
@@ -185,12 +185,12 @@ function CarrierTable({ carriers, tech }: { carriers: CarrierComponent[]; tech: 
               <div className="grid grid-cols-4 gap-2">
                 {metrics.map((m) => (
                   <div key={m.label}>
-                    <p className="text-[9px] font-bold uppercase tracking-wider text-ink3">{m.label}</p>
-                    <p className={`tnum text-sm font-bold ${m.cls}`}>{m.value ?? '\u2014'}</p>
+                    <p className="label">{m.label}</p>
+                    <p className={`tnum font-mono text-sm font-bold ${m.cls}`}>{m.value ?? '\u2014'}</p>
                   </div>
                 ))}
               </div>
-              <div className="tnum mt-2 flex flex-wrap gap-x-4 gap-y-1 border-t border-line/8 pt-2 text-[11px] text-ink3">
+              <div className="tnum font-mono mt-2 flex flex-wrap gap-x-4 gap-y-1 border-t border-line/8 pt-2 text-caption text-ink3">
                 <span>PCI {c.pci}</span>
                 <span>
                   {isNR ? 'ARFCN' : 'EARFCN'} {c.earfcn}
@@ -226,7 +226,7 @@ export default function Overview() {
   if (!data) {
     return (
       <Card>
-        <p className="text-[13px] text-ink3">No radio data reported by the modem.</p>
+        <p className="text-body text-ink3">No radio data reported by the modem.</p>
       </Card>
     )
   }
@@ -242,19 +242,19 @@ export default function Overview() {
       <Card>
         <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-ink3">Connection</p>
+            <p className="label">Connection</p>
             <p className="mt-0.5 text-sm font-bold text-ink">{data.type ?? '\u2014'}</p>
           </div>
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-ink3">Provider</p>
+            <p className="label">Provider</p>
             <p className="mt-0.5 text-sm font-medium text-ink">{data.carrier ?? '\u2014'}</p>
           </div>
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-ink3">Cell ID</p>
-            <p className="tnum mt-0.5 font-mono text-[13px] text-ink2">{data.cell_id ?? '\u2014'}</p>
+            <p className="label">Cell ID</p>
+            <p className="tnum mt-0.5 font-mono text-body text-ink2">{data.cell_id ?? '\u2014'}</p>
           </div>
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-ink3">Carriers</p>
+            <p className="label">Carriers</p>
             <p className="mt-0.5 text-sm text-ink2">
               {hasNR ? `${data.nr_carriers.length} NR` : ''}
               {hasNR && hasLTE ? ' + ' : ''}
@@ -263,10 +263,10 @@ export default function Overview() {
             </p>
           </div>
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-ink3">Bandwidth</p>
-            <p className="tnum mt-0.5 text-sm font-bold text-ink">{formatBandwidthMHz(totalBw)}</p>
+            <p className="label">Bandwidth</p>
+            <p className="tnum font-mono mt-0.5 text-sm font-bold text-ink">{formatBandwidthMHz(totalBw)}</p>
             {hasNR && hasLTE && (
-              <p className="tnum text-[10px] text-ink3">
+              <p className="tnum font-mono text-caption text-ink3">
                 NR {formatBandwidthMHz(nrBw)} + LTE {formatBandwidthMHz(lteBw)}
               </p>
             )}
@@ -285,31 +285,31 @@ export default function Overview() {
       )}
 
       <Card title="Signal quality reference">
-        <div className="grid grid-cols-1 gap-4 text-[13px] md:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 text-body md:grid-cols-3">
           <div>
             <p className="mb-1.5 font-semibold text-ink">RSRP (dBm)</p>
             <div className="space-y-0.5 text-ink2">
-              <div className="flex justify-between"><span className="text-ok">Excellent</span><span className="tnum text-ink3">&gt; -80</span></div>
-              <div className="flex justify-between"><span className="text-ok">Good</span><span className="tnum text-ink3">-80 to -90</span></div>
-              <div className="flex justify-between"><span className="text-warn">Fair</span><span className="tnum text-ink3">-90 to -100</span></div>
-              <div className="flex justify-between"><span className="text-danger">Poor</span><span className="tnum text-ink3">&lt; -100</span></div>
+              <div className="flex justify-between"><span className="text-ok">Excellent</span><span className="tnum font-mono text-ink3">&gt; -80</span></div>
+              <div className="flex justify-between"><span className="text-ok">Good</span><span className="tnum font-mono text-ink3">-80 to -90</span></div>
+              <div className="flex justify-between"><span className="text-warn">Fair</span><span className="tnum font-mono text-ink3">-90 to -100</span></div>
+              <div className="flex justify-between"><span className="text-danger">Poor</span><span className="tnum font-mono text-ink3">&lt; -100</span></div>
             </div>
           </div>
           <div>
             <p className="mb-1.5 font-semibold text-ink">RSRQ (dB)</p>
             <div className="space-y-0.5 text-ink2">
-              <div className="flex justify-between"><span className="text-ok">Good</span><span className="tnum text-ink3">&gt; -10</span></div>
-              <div className="flex justify-between"><span className="text-warn">Fair</span><span className="tnum text-ink3">-10 to -15</span></div>
-              <div className="flex justify-between"><span className="text-danger">Poor</span><span className="tnum text-ink3">&lt; -15</span></div>
+              <div className="flex justify-between"><span className="text-ok">Good</span><span className="tnum font-mono text-ink3">&gt; -10</span></div>
+              <div className="flex justify-between"><span className="text-warn">Fair</span><span className="tnum font-mono text-ink3">-10 to -15</span></div>
+              <div className="flex justify-between"><span className="text-danger">Poor</span><span className="tnum font-mono text-ink3">&lt; -15</span></div>
             </div>
           </div>
           <div>
             <p className="mb-1.5 font-semibold text-ink">SINR (dB)</p>
             <div className="space-y-0.5 text-ink2">
-              <div className="flex justify-between"><span className="text-ok">Excellent</span><span className="tnum text-ink3">&gt; 20</span></div>
-              <div className="flex justify-between"><span className="text-ok">Good</span><span className="tnum text-ink3">10 to 20</span></div>
-              <div className="flex justify-between"><span className="text-warn">Fair</span><span className="tnum text-ink3">0 to 10</span></div>
-              <div className="flex justify-between"><span className="text-danger">Poor</span><span className="tnum text-ink3">&lt; 0</span></div>
+              <div className="flex justify-between"><span className="text-ok">Excellent</span><span className="tnum font-mono text-ink3">&gt; 20</span></div>
+              <div className="flex justify-between"><span className="text-ok">Good</span><span className="tnum font-mono text-ink3">10 to 20</span></div>
+              <div className="flex justify-between"><span className="text-warn">Fair</span><span className="tnum font-mono text-ink3">0 to 10</span></div>
+              <div className="flex justify-between"><span className="text-danger">Poor</span><span className="tnum font-mono text-ink3">&lt; 0</span></div>
             </div>
           </div>
         </div>

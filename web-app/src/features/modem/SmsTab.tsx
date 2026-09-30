@@ -152,7 +152,7 @@ export default function SmsTab() {
                 onChange={(e) => setText(e.target.value)}
                 required
                 rows={4}
-                className="w-full resize-none rounded-lg border border-line/12 bg-surface2/50 px-3 py-2 text-[13px] text-ink outline-none transition-colors placeholder:text-ink3 focus:border-accent/60"
+                className="w-full resize-none rounded-ctl border border-line/12 bg-surface2/50 px-3 py-2 text-body text-ink outline-none transition-colors placeholder:text-ink3 focus:border-accent/60"
                 placeholder="Type a message…"
               />
             </Field>
@@ -163,7 +163,7 @@ export default function SmsTab() {
               <Button type="button" variant="ghost" onClick={() => setComposing(false)}>
                 Cancel
               </Button>
-              <span className="tnum ml-auto text-[11px] text-ink3">{text.length}/160</span>
+              <span className="tnum font-mono ml-auto text-caption text-ink3">{text.length}/160</span>
             </div>
           </form>
         </Card>
@@ -190,13 +190,13 @@ export default function SmsTab() {
                     }`}
                   >
                     <div className="flex items-start justify-between gap-2">
-                      <p className={`truncate text-[13px] ${m.tag === 1 ? 'font-bold text-ink' : 'font-medium text-ink2'}`}>
+                      <p className={`truncate text-body ${m.tag === 1 ? 'font-bold text-ink' : 'font-medium text-ink2'}`}>
                         {m.number || '—'}
                       </p>
                       {m.tag === 1 && <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-accent" />}
                     </div>
-                    <p className="mt-0.5 truncate text-[12px] text-ink3">{m.content}</p>
-                    <p className="tnum mt-0.5 text-[11px] text-ink3">{formatDate(m.date)}</p>
+                    <p className="mt-0.5 truncate text-meta text-ink3">{m.content}</p>
+                    <p className="tnum font-mono mt-0.5 text-caption text-ink3">{formatDate(m.date)}</p>
                   </button>
                 </li>
               ))}
@@ -209,17 +209,17 @@ export default function SmsTab() {
             <div className="space-y-3">
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <p className="truncate text-[13px] font-semibold text-ink">
+                  <p className="truncate text-body font-semibold text-ink">
                     {box === BOX_INBOX ? 'From' : 'To'}: {selected.number || '\u2014'}
                   </p>
-                  <p className="tnum mt-0.5 text-[11px] text-ink3">{formatDate(selected.date)}</p>
+                  <p className="tnum font-mono mt-0.5 text-caption text-ink3">{formatDate(selected.date)}</p>
                 </div>
                 <Button size="sm" variant="ghost" onClick={() => deleteMsg(selected.id)}>
                   Delete
                 </Button>
               </div>
-              <div className="rounded-lg bg-surface2/70 p-3.5">
-                <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-ink">{selected.content}</p>
+              <div className="rounded-ctl bg-surface2/70 p-3.5">
+                <p className="whitespace-pre-wrap break-words text-body leading-relaxed text-ink">{selected.content}</p>
               </div>
               {box === BOX_INBOX && (
                 <Button

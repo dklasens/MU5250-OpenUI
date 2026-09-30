@@ -12,8 +12,8 @@ export default function NetworkGroup() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-xl font-bold text-ink">Network</h1>
-        <p className="mt-0.5 text-[13px] text-ink2">Connected clients, Wi-Fi and router settings</p>
+        <h1 className="hidden font-display text-2xl font-semibold tracking-[-0.015em] text-ink lg:block">Network</h1>
+        <p className="lg:mt-0.5 text-body text-ink2">Connected clients, Wi-Fi and router settings</p>
       </div>
 
       <Tabs

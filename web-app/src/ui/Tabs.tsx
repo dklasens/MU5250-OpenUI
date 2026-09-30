@@ -3,7 +3,7 @@ export interface TabDef<T extends string> {
   label: string
 }
 
-/** Horizontally scrollable pill tab strip. */
+/** Horizontally scrollable underline tab strip (design.md § Controls). */
 export function Tabs<T extends string>({
   tabs,
   active,
@@ -14,17 +14,17 @@ export function Tabs<T extends string>({
   onChange: (id: T) => void
 }) {
   return (
-    <div className="no-scrollbar -mx-1 -my-1 flex gap-1 overflow-x-auto px-1 py-1" role="tablist">
+    <div className="no-scrollbar flex gap-5 overflow-x-auto border-b border-line/8" role="tablist">
       {tabs.map((t) => (
         <button
           key={t.id}
           role="tab"
           aria-selected={active === t.id}
           onClick={() => onChange(t.id)}
-          className={`whitespace-nowrap rounded-full px-3.5 py-1.5 text-[13px] font-semibold transition-colors ${
+          className={`-mb-px whitespace-nowrap border-b-2 pb-2 pt-1 text-body font-semibold transition-colors ${
             active === t.id
-              ? 'bg-surface text-ink shadow-sm ring-1 ring-line/10'
-              : 'text-ink2 hover:bg-surface2 hover:text-ink'
+              ? 'border-accent text-ink'
+              : 'border-transparent text-ink3 hover:text-ink'
           }`}
         >
           {t.label}

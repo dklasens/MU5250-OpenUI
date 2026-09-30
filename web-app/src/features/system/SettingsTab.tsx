@@ -4,7 +4,8 @@ import { API_BASE } from '../../data/client'
 import { formatUptime } from '../../format'
 import type { DeviceInfo, SimInfo, UsbStatus } from '../../types'
 import { ILogout, IPower, IRefresh, IRestart } from '../../icons'
-import { Button, Toggle } from '../../ui/controls'
+import { useTheme, type ThemePref } from '../../app/theme'
+import { Button, Segmented, Toggle } from '../../ui/controls'
 import { confirm, toast, toastError } from '../../ui/feedback'
 import { Card, Row } from '../../ui/primitives'
 
@@ -131,7 +132,7 @@ function UsbSection() {
   return (
     <Card title="USB mode">
       <div className="space-y-3">
-        <p className="text-[12px] text-ink2">
+        <p className="text-meta text-ink2">
           Switch USB operating mode. Most changes need a reboot to take effect.
           {activeMode && (
             <>
@@ -139,7 +140,7 @@ function UsbSection() {
             </>
           )}
         </p>
-        {status?.ncm_last_error && <p className="text-[12px] text-danger">Last NCM attempt: {status.ncm_last_error}</p>}
+        {status?.ncm_last_error && <p className="text-meta text-danger">Last NCM attempt: {status.ncm_last_error}</p>}
 
         <div className="flex flex-wrap gap-1.5">
           {modes.map((mode) => {
@@ -153,7 +154,7 @@ function UsbSection() {
                 onClick={() => setMode(mode)}
                 disabled={busy || !isSupported}
                 title={info.description}
-                className={`rounded-lg border px-3 py-1.5 text-[12px] font-bold transition-colors disabled:opacity-40 ${
+                className={`rounded-ctl border px-3 py-1.5 text-meta font-bold transition-colors disabled:opacity-40 ${
                   isActive
                     ? 'border-ok/30 bg-ok/10 text-ok'
                     : !isSupported
@@ -170,8 +171,8 @@ function UsbSection() {
 
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line/8 pt-3">
           <div>
-            <p className="text-[13px] font-semibold text-ink">NCM after boot</p>
-            <p className="text-[12px] text-ink2">Applies NCM after the stock USB stack settles.</p>
+            <p className="text-body font-semibold text-ink">NCM after boot</p>
+            <p className="text-meta text-ink2">Applies NCM after the stock USB stack settles.</p>
           </div>
           <Toggle checked={ncmDefaultEnabled} disabled={busy} onChange={setNcmDefault} label="NCM after boot" />
         </div>
@@ -179,8 +180,8 @@ function UsbSection() {
         {powerbank !== null && (
           <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line/8 pt-3">
             <div>
-              <p className="text-[13px] font-semibold text-ink">Powerbank / OTG</p>
-              <p className="text-[12px] text-ink2">Drive the USB-C port as a power output.</p>
+              <p className="text-body font-semibold text-ink">Powerbank / OTG</p>
+              <p className="text-meta text-ink2">Drive the USB-C port as a power output.</p>
             </div>
             <Toggle checked={powerbank} onChange={togglePowerbank} label="Powerbank" />
           </div>
@@ -193,6 +194,7 @@ function UsbSection() {
 // ── Settings tab ──────────────────────────────────────────────────────────────
 
 export default function SettingsTab({ onLogout }: { onLogout: () => void }) {
+  const { pref: themePref, setPref: setThemePref } = useTheme()
   const [device, setDevice] = useState<DeviceInfo | null>(null)
   const [sim, setSim] = useState<SimInfo | null>(null)
   const [imei, setImei] = useState('')
@@ -290,9 +292,25 @@ export default function SettingsTab({ onLogout }: { onLogout: () => void }) {
             <IPower size={14} /> Shut down
           </Button>
         </div>
-        <p className="mt-2.5 text-[12px] text-ink3">
+        <p className="mt-2.5 text-meta text-ink3">
           Restart agent briefly interrupts the backend. Reboot and shut down interrupt all connections.
         </p>
+      </Card>
+
+      <Card title="Appearance">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <span className="text-body text-ink2">Theme</span>
+          <Segmented<ThemePref>
+            options={[
+              { value: 'auto', label: 'Auto' },
+              { value: 'light', label: 'Light' },
+              { value: 'dark', label: 'Dark' },
+            ]}
+            value={themePref}
+            onChange={setThemePref}
+          />
+        </div>
+        <p className="mt-2 text-meta text-ink3">Auto follows this device's light or dark setting.</p>
       </Card>
 
       <Card title="Connection">

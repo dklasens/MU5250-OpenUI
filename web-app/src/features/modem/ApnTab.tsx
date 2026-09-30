@@ -35,14 +35,14 @@ function ApnMode() {
 
   return (
     <Card title="APN mode">
-      <p className="mb-3 text-[12px] text-ink2">
+      <p className="mb-3 text-meta text-ink2">
         Automatic selects the APN from your SIM. Switch to manual to use a custom profile.
       </p>
       <div className="flex gap-1.5">
         <button
           onClick={() => apply(0)}
           disabled={busy || mode === 0}
-          className={`rounded-lg px-3.5 py-1.5 text-[13px] font-semibold transition-colors disabled:opacity-45 ${
+          className={`rounded-ctl px-3.5 py-1.5 text-body font-semibold transition-colors disabled:opacity-45 ${
             mode === 0 ? 'bg-ok/12 text-ok' : 'bg-surface2 text-ink2 hover:bg-line/10'
           }`}
         >
@@ -51,8 +51,8 @@ function ApnMode() {
         <button
           onClick={() => apply(1)}
           disabled={busy || mode === 1}
-          className={`rounded-lg px-3.5 py-1.5 text-[13px] font-semibold transition-colors disabled:opacity-45 ${
-            mode === 1 ? 'bg-accent text-white' : 'bg-surface2 text-ink2 hover:bg-line/10'
+          className={`rounded-ctl px-3.5 py-1.5 text-body font-semibold transition-colors disabled:opacity-45 ${
+            mode === 1 ? 'bg-accent text-onaccent' : 'bg-surface2 text-ink2 hover:bg-line/10'
           }`}
         >
           Manual
@@ -152,16 +152,16 @@ function Profiles() {
             {profiles.map((p) => (
               <div
                 key={p.profileId}
-                className={`flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 ${
+                className={`flex flex-wrap items-center justify-between gap-2 rounded-ctl border px-3 py-2 ${
                   p.isEnable ? 'border-accent/30 bg-accent/4' : 'border-line/8'
                 }`}
               >
                 <div className="min-w-0">
-                  <p className="flex items-center gap-2 text-[13px] font-semibold text-ink">
+                  <p className="flex items-center gap-2 text-body font-semibold text-ink">
                     <span className="truncate">{p.profilename}</span>
                     {p.isEnable && <Chip tone="ok">Active</Chip>}
                   </p>
-                  <p className="tnum mt-0.5 truncate text-[12px] text-ink2">
+                  <p className="tnum font-mono mt-0.5 truncate text-meta text-ink2">
                     {p.wanapn} — {PDP_LABELS[p.pdpType] ?? '?'} / {AUTH_LABELS[p.pppAuthMode] ?? '?'}
                     {p.username ? ` — ${p.username}` : ''}
                   </p>

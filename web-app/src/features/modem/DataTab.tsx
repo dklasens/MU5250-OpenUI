@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useHome } from '../../app/HomeContext'
 import { api } from '../../data/api'
 import { formatBytes, formatUptime } from '../../format'
+import { IDownload, IUpload } from '../../icons'
 import type { UsagePeriod } from '../../types'
 import { Button, Input } from '../../ui/controls'
 import { toast, toastError } from '../../ui/feedback'
@@ -35,17 +36,17 @@ function UsageTotals({ usage }: { usage: UsagePeriod }) {
   const total = usage.rx_bytes + usage.tx_bytes
   return (
     <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-      <div className="rounded-lg bg-surface2/70 p-3">
-        <p className="text-[10px] font-semibold uppercase tracking-wider text-ok">Download</p>
-        <p className="tnum mt-1 text-xl font-bold text-ink">{formatBytes(usage.rx_bytes)}</p>
+      <div className="rounded-ctl bg-surface2/70 p-3">
+        <p className="label text-ok">Download</p>
+        <p className="tnum font-mono mt-1 text-xl font-medium text-ink">{formatBytes(usage.rx_bytes)}</p>
       </div>
-      <div className="rounded-lg bg-surface2/70 p-3">
-        <p className="text-[10px] font-semibold uppercase tracking-wider text-accent">Upload</p>
-        <p className="tnum mt-1 text-xl font-bold text-ink">{formatBytes(usage.tx_bytes)}</p>
+      <div className="rounded-ctl bg-surface2/70 p-3">
+        <p className="label text-accent">Upload</p>
+        <p className="tnum font-mono mt-1 text-xl font-medium text-ink">{formatBytes(usage.tx_bytes)}</p>
       </div>
-      <div className="rounded-lg bg-surface2/70 p-3">
-        <p className="text-[10px] font-semibold uppercase tracking-wider text-ink3">Total</p>
-        <p className="tnum mt-1 text-xl font-bold text-ink">{formatBytes(total)}</p>
+      <div className="rounded-ctl bg-surface2/70 p-3">
+        <p className="label">Total</p>
+        <p className="tnum font-mono mt-1 text-xl font-medium text-ink">{formatBytes(total)}</p>
       </div>
     </div>
   )
@@ -97,6 +98,10 @@ export default function DataTab() {
   const dates = cycleWindow(currentResetDay)
   const cycle = usage.cycle ?? usage.month
   const sincePowerOn = usage.since_power_on
+  const otherCounters = [
+    { label: 'Today', data: usage.day },
+    { label: 'Device lifetime', data: usage.total },
+  ]
 
   return (
     <div className="space-y-3">
@@ -109,9 +114,9 @@ export default function DataTab() {
         }
       >
         {editingResetDay && (
-          <div className="mb-3 flex flex-wrap items-end gap-2 rounded-lg bg-surface2/70 p-3">
+          <div className="mb-3 flex flex-wrap items-end gap-2 rounded-ctl bg-surface2/70 p-3">
             <div className="w-28">
-              <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-ink3">Reset day</p>
+              <p className="label mb-1">Reset day</p>
               <Input type="number" min={1} max={31} value={resetDay} onChange={(e) => setResetDay(e.target.value)} />
             </div>
             <Button variant="primary" onClick={saveResetDay} loading={busy}>
@@ -125,9 +130,9 @@ export default function DataTab() {
 
         {cycle ? (
           <div className="space-y-3">
-            <div className="flex flex-wrap gap-x-4 gap-y-1 text-[13px] text-ink2">
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-body text-ink2">
               <span>
-                Reset day: <span className="tnum font-bold text-ink">{currentResetDay}</span>
+                Reset day: <span className="tnum font-mono font-bold text-ink">{currentResetDay}</span>
               </span>
               <span>
                 Period: <span className="font-bold text-ink">{formatDate(dates.start)} – {formatDate(dates.end)}</span>
@@ -137,27 +142,43 @@ export default function DataTab() {
               </span>
             </div>
             <UsageTotals usage={cycle} />
-            <p className="text-[12px] text-ink3">
+            <p className="text-meta text-ink3">
               Counters are maintained by the router and reset on the configured day each month.
             </p>
           </div>
         ) : (
-          <p className="text-[13px] text-ink3">No cycle data</p>
+          <p className="text-body text-ink3">No cycle data</p>
         )}
       </Card>
 
       {sincePowerOn && (
         <Card title="Since power on">
           <UsageTotals usage={sincePowerOn} />
-          <p className="mt-2 text-[12px] text-ink3">Counter time: {formatUptime(sincePowerOn.time_secs)}</p>
+          <p className="mt-2 text-meta text-ink3">Counter time: {formatUptime(sincePowerOn.time_secs)}</p>
         </Card>
       )}
 
       <Card title="Other counters" pad={false}>
-        <div className="overflow-x-auto px-4 pb-3">
-          <table className="w-full text-[13px]">
+        {/* Mobile: stacked rows instead of a five-column table */}
+        <ul className="divide-y divide-line/6 px-4 sm:hidden">
+          {otherCounters.map(({ label, data: d }) => (
+            <li key={label} className="py-2.5">
+              <div className="flex items-baseline justify-between gap-2 text-body">
+                <span className="text-ink2">{label}</span>
+                <span className="tnum font-mono font-semibold text-ink">{formatBytes(d.rx_bytes + d.tx_bytes)}</span>
+              </div>
+              <div className="tnum font-mono mt-0.5 flex flex-wrap gap-x-3 text-meta">
+                <span className="flex items-center gap-1 text-ok"><IDownload size={12} /> {formatBytes(d.rx_bytes)}</span>
+                <span className="flex items-center gap-1 text-accent"><IUpload size={12} /> {formatBytes(d.tx_bytes)}</span>
+                <span className="ml-auto text-ink3">{formatUptime(d.time_secs)}</span>
+              </div>
+            </li>
+          ))}
+        </ul>
+        <div className="hidden overflow-x-auto px-4 pb-3 sm:block">
+          <table className="w-full text-body">
             <thead>
-              <tr className="border-b border-line/8 text-left text-[11px] uppercase tracking-wider text-ink3">
+              <tr className="label border-b border-line/8 text-left">
                 <th className="pb-1.5 pr-4 font-semibold">Period</th>
                 <th className="pb-1.5 pr-4 text-right font-semibold">Down</th>
                 <th className="pb-1.5 pr-4 text-right font-semibold">Up</th>
@@ -166,18 +187,15 @@ export default function DataTab() {
               </tr>
             </thead>
             <tbody>
-              {[
-                { label: 'Today', data: usage.day },
-                { label: 'Device lifetime', data: usage.total },
-              ].map(({ label, data: d }) => (
+              {otherCounters.map(({ label, data: d }) => (
                 <tr key={label} className="border-b border-line/6 last:border-0">
                   <td className="py-2 pr-4 text-ink2">{label}</td>
-                  <td className="tnum py-2 pr-4 text-right text-ok">{formatBytes(d.rx_bytes)}</td>
-                  <td className="tnum py-2 pr-4 text-right text-accent">{formatBytes(d.tx_bytes)}</td>
-                  <td className="tnum py-2 pr-4 text-right font-semibold text-ink">
+                  <td className="tnum font-mono py-2 pr-4 text-right text-ok">{formatBytes(d.rx_bytes)}</td>
+                  <td className="tnum font-mono py-2 pr-4 text-right text-accent">{formatBytes(d.tx_bytes)}</td>
+                  <td className="tnum font-mono py-2 pr-4 text-right font-semibold text-ink">
                     {formatBytes(d.rx_bytes + d.tx_bytes)}
                   </td>
-                  <td className="tnum py-2 text-right text-ink3">{formatUptime(d.time_secs)}</td>
+                  <td className="tnum font-mono py-2 text-right text-ink3">{formatUptime(d.time_secs)}</td>
                 </tr>
               ))}
             </tbody>

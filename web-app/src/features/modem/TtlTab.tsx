@@ -60,18 +60,18 @@ export default function TtlTab() {
   return (
     <Card title="TTL clamping">
       <div className="space-y-3">
-        <p className="text-[12px] text-ink2">
+        <p className="text-meta text-ink2">
           Overrides the TTL / hop limit on LAN ingress traffic to prevent carrier tethering detection.
           Applied immediately and persists across reboots.
         </p>
 
         {status == null ? (
-          <p className="text-[13px] text-ink3">Checking status…</p>
+          <p className="text-body text-ink3">Checking status…</p>
         ) : active ? (
           <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
             <div className="flex items-center gap-2">
               <span className="h-2 w-2 rounded-full bg-ok" />
-              <span className="tnum text-[13px] font-semibold text-ok">Active (TTL={status.ttl_value})</span>
+              <span className="tnum font-mono text-body font-semibold text-ok">Active (TTL={status.ttl_value})</span>
               {status.ipv6_active && <Chip tone="default">IPv4 + IPv6</Chip>}
             </div>
             <div className="flex items-center gap-2">

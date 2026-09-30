@@ -29,7 +29,7 @@ function NetworkMode({ currentMode, modes, onApplied }: { currentMode: string; m
 
   return (
     <Card title="Network mode">
-      <p className="mb-3 text-[12px] text-ink2">
+      <p className="mb-3 text-meta text-ink2">
         Preferred network technology. The modem reconnects after a change.
       </p>
       <div className="flex flex-wrap gap-1.5">
@@ -37,9 +37,9 @@ function NetworkMode({ currentMode, modes, onApplied }: { currentMode: string; m
           <button
             key={m.value}
             onClick={() => setSelected(m.value)}
-            className={`rounded-lg px-3 py-1.5 text-[13px] font-semibold transition-colors ${
+            className={`rounded-ctl px-3 py-1.5 text-body font-semibold transition-colors ${
               selected === m.value
-                ? 'bg-accent text-white'
+                ? 'bg-accent text-onaccent'
                 : 'bg-surface2 text-ink2 hover:bg-line/10 hover:text-ink'
             }`}
           >
@@ -52,7 +52,7 @@ function NetworkMode({ currentMode, modes, onApplied }: { currentMode: string; m
           Apply
         </Button>
         {selected !== currentMode && (
-          <span className="text-[12px] text-ink3">
+          <span className="text-meta text-ink3">
             Current: {modes.find((m) => m.value === currentMode)?.label ?? currentMode}
           </span>
         )}
@@ -75,14 +75,14 @@ function ServingCells({ signal, onLock }: { signal: SignalInfo; onLock: (type: '
           <td className="py-1.5 pr-3">
             <Chip tone={c.label === 'PCC' ? (tech === 'nr' ? 'nr' : 'lte') : 'default'}>{c.label}</Chip>
           </td>
-          <td className={`py-1.5 pr-3 font-semibold ${tech === 'nr' ? 'text-violet-600 dark:text-violet-400' : 'text-accent'}`}>
+          <td className={`py-1.5 pr-3 font-semibold ${tech === 'nr' ? 'text-nr' : 'text-accent'}`}>
             {c.band}
           </td>
-          <td className="tnum py-1.5 pr-3">{c.pci}</td>
-          <td className="tnum py-1.5 pr-3">{c.earfcn}</td>
-          <td className="tnum hidden py-1.5 pr-3 text-ink2 sm:table-cell">{c.bandwidth}</td>
-          <td className="tnum py-1.5 pr-3">{c.rsrp ?? '\u2014'}</td>
-          <td className="tnum hidden py-1.5 pr-3 sm:table-cell">{c.sinr ?? '\u2014'}</td>
+          <td className="tnum font-mono py-1.5 pr-3">{c.pci}</td>
+          <td className="tnum font-mono py-1.5 pr-3">{c.earfcn}</td>
+          <td className="tnum font-mono hidden py-1.5 pr-3 text-ink2 sm:table-cell">{c.bandwidth}</td>
+          <td className="tnum font-mono py-1.5 pr-3">{c.rsrp ?? '\u2014'}</td>
+          <td className="tnum font-mono hidden py-1.5 pr-3 sm:table-cell">{c.sinr ?? '\u2014'}</td>
           <td className="py-1.5 text-right">
             <Button size="sm" variant="outline" onClick={() => onLock(tech, c.pci, c.earfcn, tech === 'nr' ? bandNum : undefined)}>
               Lock
@@ -94,11 +94,11 @@ function ServingCells({ signal, onLock }: { signal: SignalInfo; onLock: (type: '
 
   return (
     <Card title="Serving cells">
-      <p className="mb-3 text-[12px] text-ink2">Active cells — lock directly from this list.</p>
+      <p className="mb-3 text-meta text-ink2">Active cells — lock directly from this list.</p>
       <div className="overflow-x-auto">
-        <table className="w-full text-left text-[13px]">
+        <table className="w-full text-left text-body">
           <thead>
-            <tr className="border-b border-line/8 text-[11px] uppercase tracking-wider text-ink3">
+            <tr className="label border-b border-line/8">
               <th className="pb-1.5 pr-3 font-semibold">Type</th>
               <th className="pb-1.5 pr-3 font-semibold">Band</th>
               <th className="pb-1.5 pr-3 font-semibold">PCI</th>
@@ -171,17 +171,17 @@ function BandLock({
     }
   }
 
-  const activeCls = type === 'nr' ? 'bg-violet-600 text-white' : 'bg-accent text-white'
+  const activeCls = type === 'nr' ? 'bg-nr text-onaccent' : 'bg-accent text-onaccent'
 
   return (
     <Card title={title}>
-      <p className="mb-2.5 text-[12px] text-ink2">{description}</p>
+      <p className="mb-2.5 text-meta text-ink2">{description}</p>
       {lockedBands && lockedBands.length > 0 && (
-        <p className="mb-2 text-[12px] font-medium text-ok">
+        <p className="mb-2 text-meta font-medium text-ok">
           Locked: {[...lockedBands].sort((a, b) => a - b).map((b) => (type === 'nr' ? `n${b}` : `B${b}`)).join(', ')}
         </p>
       )}
-      <div className="mb-2 flex gap-3 text-[12px] font-semibold">
+      <div className="mb-2 flex gap-3 text-meta font-semibold">
         <button className="text-accent hover:underline" onClick={() => setSelected(new Set(bands))}>
           Select all
         </button>
@@ -194,7 +194,7 @@ function BandLock({
           <button
             key={b}
             onClick={() => toggle(b)}
-            className={`tnum rounded-lg px-2.5 py-1.5 text-[12px] font-semibold transition-colors ${
+            className={`tnum font-mono rounded-ctl px-2.5 py-1.5 text-meta font-semibold transition-colors ${
               selected.has(b) ? activeCls : 'bg-surface2 text-ink2 hover:bg-line/10 hover:text-ink'
             }`}
           >
@@ -243,7 +243,7 @@ function CellLock({ type, onApplied }: { type: 'nr' | 'lte'; onApplied: () => vo
 
   return (
     <Card title={`${type === 'nr' ? 'NR' : 'LTE'} cell lock`}>
-      <p className="mb-3 text-[12px] text-ink2">
+      <p className="mb-3 text-meta text-ink2">
         Lock to a specific cell by PCI and {type === 'nr' ? 'NR-ARFCN' : 'EARFCN'}.
       </p>
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -343,7 +343,7 @@ export default function Locking() {
         <Skeleton className="h-40" />
       ) : (
         <Card title="Network mode and bands">
-          <p className="text-[12px] text-warn">Firmware capability data is unavailable, so radio mode and band changes are disabled.</p>
+          <p className="text-meta text-warn">Firmware capability data is unavailable, so radio mode and band changes are disabled.</p>
         </Card>
       )}
 
@@ -374,7 +374,7 @@ export default function Locking() {
       </div>
 
       <Card title="Reset locks">
-        <p className="mb-3 text-[12px] text-ink2">
+        <p className="mb-3 text-meta text-ink2">
           Remove all band and cell locks; the modem returns to automatic selection.
         </p>
         <div className="flex flex-wrap gap-2">
@@ -388,7 +388,7 @@ export default function Locking() {
       </Card>
 
       <Card title="Diagnostics">
-        <div className="tnum space-y-1 font-mono text-[11px] text-ink3">
+        <div className="tnum space-y-1 font-mono text-caption text-ink3">
           <p>
             LTE lock (raw): <span className="text-ink">{signal.raw_lte_band_lock || '(empty)'}</span>
           </p>
