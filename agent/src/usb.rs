@@ -4,6 +4,7 @@ use std::os::unix::fs as unix_fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -26,6 +27,20 @@ const PERSIST_CONFIG_PATH: &str = "/data/local/tmp/usb_config.json";
 const LEGACY_PERSIST_CONFIG_PATH: &str = "/data/local/tmp/wifi_config.json";
 const USB_DEFAULT_MODE_KEY: &str = "usb_default_mode";
 static USB_BUSY: AtomicBool = AtomicBool::new(false);
+static UBUS_SWITCH: OnceLock<bool> = OnceLock::new();
+
+/// Whether the firmware's ECM/RNDIS switch (`zwrt_bsp.usb set`) exists. CN B31
+/// ships `zwrt_bsp.usb` with only `list`, so RNDIS cannot be reached there. An
+/// unanswered probe is not cached and keeps the old behaviour (try the call).
+fn ubus_switch_available() -> bool {
+    if let Some(known) = UBUS_SWITCH.get() {
+        return *known;
+    }
+    match ubus::has_method("zwrt_bsp.usb", "set") {
+        Some(found) => *UBUS_SWITCH.get_or_init(|| found),
+        None => true,
+    }
+}
 struct SwitchGuard;
 impl SwitchGuard {
     fn acquire() -> Result<Self, String> {
@@ -290,7 +305,11 @@ fn set_usb_default_mode(mode: &str) -> Result<(), String> {
 }
 
 fn supported_modes() -> Vec<&'static str> {
-    let mut modes = vec!["rndis", "ecm"];
+    let mut modes = if ubus_switch_available() {
+        vec!["rndis", "ecm"]
+    } else {
+        vec!["ecm"]
+    };
     if Path::new(NCM_FUNC).exists() {
         modes.push("ncm");
     }
@@ -361,6 +380,8 @@ pub fn usb_status(_state: &AppState) -> (u16, Value) {
     payload.insert("active_mode".into(), json!(detect_active_usb_mode()));
     payload.insert("default_mode".into(), json!(default_mode));
     payload.insert("ncm_persist_on_boot".into(), json!(default_mode == "ncm"));
+    let switch = ubus_switch_available();
+    payload.insert("mode_switch".into(), json!(switch));
     payload.insert("supported_modes".into(), json!(supported_modes()));
     payload.insert(
         "experimental_modes".into(),
@@ -375,9 +396,10 @@ pub fn usb_status(_state: &AppState) -> (u16, Value) {
         json!([
             {
                 "mode": "rndis",
-                "supported": Path::new(RNDIS_GSI_FUNC).exists(),
+                "supported": switch && Path::new(RNDIS_GSI_FUNC).exists(),
                 "experimental": false,
-                "function": "gsi.rndis"
+                "function": "gsi.rndis",
+                "note": if switch { None } else { Some("this firmware has no ECM/RNDIS switch (zwrt_bsp.usb set)") }
             },
             {
                 "mode": "ecm",
@@ -502,6 +524,12 @@ pub fn usb_mode_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
 
     if !["ecm", "rndis"].contains(&mode) {
         return (400, json!({"ok": false, "error": "unsupported USB mode"}));
+    }
+    if !ubus_switch_available() {
+        return (
+            409,
+            json!({"ok": false, "error": "this firmware has no ECM/RNDIS switch (zwrt_bsp.usb set is missing)"}),
+        );
     }
     let _guard = match SwitchGuard::acquire() {
         Ok(guard) => guard,

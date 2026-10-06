@@ -33,6 +33,29 @@ pub fn call(object: &str, method: &str, params: Option<&str>) -> Result<Value, S
     serde_json::from_str(trimmed).map_err(|e| format!("ubus JSON parse: {e}"))
 }
 
+/// Whether `object` exposes `method`, from `ubus -v list <object>`. `None` when
+/// ubus could not answer, so callers can ask again instead of caching a guess.
+pub fn has_method(object: &str, method: &str) -> Option<bool> {
+    let output = Command::new("ubus")
+        .args(["-v", "list", object])
+        .bounded_output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(lists_method(
+        &String::from_utf8_lossy(&output.stdout),
+        method,
+    ))
+}
+
+fn lists_method(listing: &str, method: &str) -> bool {
+    let needle = format!("\"{method}\":");
+    listing
+        .lines()
+        .any(|line| line.trim_start().starts_with(&needle))
+}
+
 /// Dump a whole UCI config in one `uci -N show` and return it as a map of
 /// `section.option` -> value.
 ///
@@ -126,7 +149,17 @@ pub fn uci_commit(config: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::uci_unquote;
+    use super::{lists_method, uci_unquote};
+
+    #[test]
+    fn method_listing_matches_whole_names() {
+        let b31 = "'zwrt_bsp.usb' @5a6476ce\n\t\"list\":{}\n";
+        assert!(lists_method(b31, "list"));
+        assert!(!lists_method(b31, "set"));
+        let b04 = "'zwrt_bsp.usb' @1\n\t\"list\":{}\n\t\"set\":{\"mode\":\"String\"}\n";
+        assert!(lists_method(b04, "set"));
+        assert!(!lists_method(b04, "se"));
+    }
 
     #[test]
     fn unquotes_plain_values() {

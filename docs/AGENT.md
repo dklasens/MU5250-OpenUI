@@ -97,6 +97,12 @@ configfs and is agent-managed (experimental, gated behind
 `confirm_experimental`), and the ubus `mode` field is not a reliable
 detector of the active composition.
 
+CN firmware B31 removed the stock switch itself: `zwrt_bsp.usb` exposes only
+`list`. The agent checks for `set` once (`ubus -v list`), reports
+`mode_switch: false`, marks RNDIS unsupported and refuses ECM/RNDIS requests
+with 409 instead of failing with "Method not found". The configfs NCM path
+does not depend on it.
+
 ## Building
 
 ```sh
