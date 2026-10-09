@@ -24,7 +24,7 @@ is a route below — `scripts/check-api-contract.py` enforces both directions
 | Family | Endpoints |
 |---|---|
 | Auth | `POST /api/auth/login` — bearer token, sliding 1 h expiry |
-| Batch | `GET /api/dashboard` — device, battery, cpu, memory, speed, data usage, signal, wan, wan6, thermal in one request. The app's heartbeat: Home, Signal and Modem/Data all read it instead of polling their own endpoints |
+| Batch | `GET /api/dashboard` — device, battery, cpu, memory, speed, data usage, signal, bearer QoS, wan, wan6, thermal in one request. The app's heartbeat: Home, Signal and Modem/Data all read it instead of polling their own endpoints |
 | Status | `GET /api/device`, `/api/cpu`, `/api/memory`, `/api/system/top` |
 | Network | `GET /api/network/clients` |
 | Device | `GET /api/device/battery-info`, `/api/device/thermal/all`, `/api/device/battery/detail`, `/api/device/charger`; `POST /api/device/reboot`, `/api/device/shutdown` |
@@ -51,7 +51,7 @@ is a route below — `scripts/check-api-contract.py` enforces both directions
   test dropped `ureq`, and with it rustls/ring/ICU.
 - **Subprocess cost**: every `ubus`/`uci` read is a fork+exec, which dominates
   the agent's CPU (about 4–5 ms per `ubus call` on-device). `cache.rs` gives
-  each dashboard source its own TTL (signal 1 s, WAN throughput 1 s, thermal 10 s, wan/wan6 30 s, data usage 30 s, cycle dates 300 s), so
+  each dashboard source its own TTL (signal 1 s, WAN throughput 1 s, thermal 10 s, bearer QoS 10 s, wan/wan6 30 s, data usage 30 s, cycle dates 300 s), so
   the client's poll rate is decoupled from the refresh rate and concurrent
   clients collapse onto one refresh. `wifi_status` dumps whole configs with
   `ubus::uci_show` instead of issuing one `uci get` per key.

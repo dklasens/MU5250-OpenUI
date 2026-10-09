@@ -21,6 +21,7 @@ const SIGNAL_TTL: Duration = Duration::from_secs(1);
 const THERMAL_TTL: Duration = Duration::from_secs(10);
 const WAN_TTL: Duration = Duration::from_secs(30);
 const DATA_USAGE_TTL: Duration = Duration::from_secs(30);
+const BEARER_TTL: Duration = Duration::from_secs(10);
 /// Billing-cycle dates move once a month.
 const CYCLE_DATE_TTL: Duration = Duration::from_secs(300);
 
@@ -30,6 +31,7 @@ pub struct DashboardCache {
     wan6: Observed<Value>,
     thermal: Observed<Value>,
     data_usage: Observed<Value>,
+    bearer: Cached<Value>,
     cycle_dates: Cached<(Option<String>, Option<String>)>,
 }
 
@@ -365,6 +367,7 @@ pub fn dashboard(state: &AppState) -> (u16, Value) {
     let data_usage = cache
         .data_usage
         .read(DATA_USAGE_TTL, || read_data_usage_live(cache));
+    let bearer = cache.bearer.get_or_refresh(BEARER_TTL, crate::bearer::read);
 
     let mut result = serde_json::Map::new();
     result.insert("device".into(), device);
@@ -377,6 +380,7 @@ pub fn dashboard(state: &AppState) -> (u16, Value) {
     );
     result.insert("data_usage".into(), data_usage.value.unwrap_or(Value::Null));
     result.insert("signal".into(), signal.value.unwrap_or(Value::Null));
+    result.insert("bearer".into(), bearer);
     result.insert("wan".into(), wan.value.unwrap_or(Value::Null));
     result.insert("wan6".into(), wan6.value.unwrap_or(Value::Null));
     result.insert("thermal".into(), thermal.value.unwrap_or(Value::Null));

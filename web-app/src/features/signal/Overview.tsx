@@ -1,7 +1,7 @@
 import { useHome } from '../../app/HomeContext'
 import { signalLegend, toneTextClass } from '../../data/signalQuality'
 import type { SignalMetric } from '../../data/signalQuality'
-import { formatBandwidthMHz } from '../../format'
+import { formatBandwidthMHz, modemMode } from '../../format'
 import type { CarrierComponent } from '../../types'
 import { Card, Chip, SignalBars, Skeleton, Unavailable } from '../../ui/primitives'
 import { MetricValue } from './MetricValue'
@@ -259,6 +259,21 @@ export default function Overview() {
               <p className="tnum font-mono text-caption text-ink3">Active only {formatBandwidthMHz(bw.activeMHz)}</p>
             )}
           </div>
+          {home.bearer && (
+            <>
+              <div>
+                <p className="label">{modemMode(data.type) === 'SA' ? '5QI' : 'QCI'}</p>
+                <p className="tnum font-mono mt-0.5 text-sm font-bold text-ink">{home.bearer.qci ?? '—'}</p>
+              </div>
+              <div>
+                <p className="label">AMBR</p>
+                <p className="tnum font-mono mt-0.5 text-sm text-ink2">
+                  {home.bearer.ambr_dl_mbps == null ? '—' : `${home.bearer.ambr_dl_mbps} / ${home.bearer.ambr_ul_mbps} Mbps`}
+                </p>
+                <p className="text-caption text-ink3">Operator rate cap, down / up</p>
+              </div>
+            </>
+          )}
           <div className="ml-auto">
             {bars === null ? (
               <p className="text-caption text-ink3">

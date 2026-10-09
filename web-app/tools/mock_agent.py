@@ -416,6 +416,7 @@ def dashboard_batch():
         },
         "data_usage": data_usage_payload(),
         "signal": signal_raw(),
+        "bearer": {"qci": 6, "ambr_dl_mbps": 2000, "ambr_ul_mbps": 200},
         "wan": wan,
         "wan6": wan6,
         "thermal": {"cpuss_temp": round(jitter(61, 0.06), 1)},

@@ -464,10 +464,17 @@ export interface SourceFreshness {
   stale: boolean
   error: string | null
 }
+/** QoS the network granted on the data session, as logged by the stock data daemon. */
+export interface BearerInfo {
+  qci: number | null
+  ambr_dl_mbps: number | null
+  ambr_ul_mbps: number | null
+}
 export interface HomeData {
   sources?: Record<string, SourceFreshness>
   charge_control_error?: string | null
   signal: SignalInfo | null
+  bearer: BearerInfo | null
   battery: BatteryInfo | null
   speed: SpeedInfo | null
   device: DeviceInfo | null

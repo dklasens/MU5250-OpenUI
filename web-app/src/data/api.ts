@@ -670,6 +670,9 @@ function mapBatteryBspInfo(d: Record<string, unknown>): BatteryBspInfo {
 function mapHome(d: Record<string, unknown>): HomeData {
   return {
     signal: isObj(d.signal) && Object.keys(d.signal).length > 0 ? mapSignal(d.signal) : null,
+    bearer: isObj(d.bearer)
+      ? { qci: parseNum(d.bearer.qci) ?? null, ambr_dl_mbps: parseNum(d.bearer.ambr_dl_mbps) ?? null, ambr_ul_mbps: parseNum(d.bearer.ambr_ul_mbps) ?? null }
+      : null,
     battery: isObj(d.battery) && Object.keys(d.battery).length > 0 ? mapBattery(d.battery) : null,
     speed: isObj(d.speed) ? mapSpeed(d.speed) : null,
     device: isObj(d.device) ? mapDevice(d.device) : null,
