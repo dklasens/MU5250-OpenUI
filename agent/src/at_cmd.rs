@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use crate::util::MutexExt;
 
 const PORTS: &[&str] = &[
+    "/dev/at_mdm2",
     "/dev/at_mdm0",
     "/dev/at_mdm1",
     "/dev/at_usb0",
