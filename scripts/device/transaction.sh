@@ -12,6 +12,7 @@ case "$id" in ''|*[!a-zA-Z0-9-]*) exit 64 ;; esac
 case "$identity" in ''|*[!a-f0-9]*) exit 64 ;; esac
 transaction="$base/$id"
 targets='data/zte-agent
+data/zte-esim
 data/open-u60-manifest.json
 data/www
 data/www.current

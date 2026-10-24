@@ -251,6 +251,8 @@ jobs:
           from pathlib import Path
           root = Path('release-assets')
           assert (root / 'zte-agent').is_file()
+          assert (root / 'zte-esim').is_file()
+          assert (root / 'LICENSE-LGPL-2.1.txt').is_file()
           assert (root / 'dashboard-dist.tar.gz').is_file()
           for pattern, count in [('*.dmg', 2), ('*.app.zip', 2), ('*.msi', 1), ('*.exe', 1), ('*-portable.zip', 1)]:
               assert len(list(root.glob(pattern))) == count, f'Missing or unexpected {pattern} assets'

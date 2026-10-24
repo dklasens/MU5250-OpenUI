@@ -518,5 +518,185 @@ class RecordingAndErrors(MockCase):
         self.assertTrue(body.startswith(b'timestamp,datetime,network_type'))
 
 
+    # -- eSIM (agent/src/esim.rs shapes) ---------------------------------------
+
+    CONFIRM = {'X-Confirm': 'true'}
+
+    def esim(self, mode='card'):
+        mock.CONFIG['esim_settle_s'] = 0.3
+        self.call('POST', '/__mock/reset', {'scenario': 'SA', 'esim': mode})
+        return self.data('GET', '/api/esim/profiles')
+
+    def handle(self, view, masked):
+        return next(p['handle'] for p in view['profiles'] if p['iccid_masked'] == masked)
+
+    def switch(self, view, path, masked, op_id, expect=202):
+        body = {'handle': self.handle(view, masked), 'revision': view['revision'], 'operation_id': op_id}
+        return self.data('POST', path, body, expect=expect, headers=self.CONFIRM)
+
+    def settle(self):
+        for _ in range(60):
+            view = self.data('GET', '/api/esim/profiles')
+            if view['operation']['resolved']:
+                return view
+            time.sleep(0.05)
+        self.fail('operation never resolved')
+
+    def test_esim_view_masks_identifiers_and_orders_the_active_profile_first(self):
+        view = self.esim()
+        self.assertEqual(view['status'], 'ready')
+        self.assertEqual(view['profiles'][0]['state'], 'enabled')
+        fiji = view['profiles'][1]
+        self.assertEqual((fiji['display_name'], fiji['name']), ('Vodafone Fiji', None))
+        self.assertEqual(fiji['warnings'], ['manual_apn', 'roaming_off'])
+        self.assertNotRegex(json.dumps(view), r'\d{18,}')
+        self.assertEqual(self.data('GET', '/api/dashboard')['esim'], {'status': 'ready', 'available': True})
+
+    def test_esim_activation_reloads_then_succeeds_and_dedupes(self):
+        view = self.esim()
+        started = self.switch(view, '/api/esim/enable', '…0002', 'op-mock-0001')
+        self.assertFalse(started['actions']['enabled'])
+        again = self.switch(view, '/api/esim/enable', '…0002', 'op-mock-0001', expect=200)
+        self.assertEqual(again['operation']['id'], 'op-mock-0001')
+        done = self.settle()
+        self.assertEqual(done['operation']['state'], 'succeeded')
+        self.assertEqual(done['profiles'][0]['iccid_masked'], '…0002')
+        self.assertEqual(done['revision'], view['revision'] + 1)
+        enables = [r for r in self.data('GET', '/__mock/requests')['requests'] if r['path'] == '/api/esim/enable']
+        self.assertEqual(len(enables), 2, 'both requests recorded; one change applied')
+
+    def test_esim_refusals_match_the_agent(self):
+        view = self.esim()
+        body = {'handle': self.handle(view, '…0002'), 'revision': view['revision'], 'operation_id': 'op-mock-0002'}
+        status, _ = self.call('POST', '/api/esim/enable', body)
+        self.assertEqual(status, 400, 'X-Confirm is required')
+        stale = dict(body, revision=view['revision'] + 1)
+        self.assertEqual(self.call('POST', '/api/esim/enable', stale, self.CONFIRM)[0], 409)
+        test_class = dict(body, handle=self.handle(view, '…0003'), operation_id='op-mock-0003')
+        self.assertEqual(self.call('POST', '/api/esim/enable', test_class, self.CONFIRM)[0], 409)
+        self.data('POST', '/api/esim/lock', {'handle': body['handle'], 'locked': True})
+        self.assertEqual(self.call('POST', '/api/esim/enable', body, self.CONFIRM)[0], 423)
+        pin = self.data('POST', '/api/auth/login', {'pin': '123456'})['token']
+        status, _ = self.call('POST', '/api/esim/lock', {'handle': body['handle'], 'locked': False},
+                              {'Authorization': f'Bearer {pin}'})
+        self.assertEqual(status, 403)
+
+    def test_esim_busy_and_unknown_outcomes(self):
+        for mode, state in (('busy', 'busy'), ('unknown', 'unknown')):
+            view = self.esim(mode)
+            self.switch(view, '/api/esim/disable', '…0001', f'op-mock-{mode}')
+            done = self.settle()
+            self.assertEqual(done['operation']['state'], state)
+            self.assertEqual(done['profiles'][0]['state'], 'enabled', 'nothing changed in the mock')
+
+    def test_esim_rename_validates_bytes_and_hidden_characters(self):
+        view = self.esim()
+        h = self.handle(view, '…0001')
+        base = {'handle': h, 'revision': view['revision']}
+        self.error('POST', '/api/esim/nickname', dict(base, operation_id='op-name-001', nickname='é' * 33))
+        self.error('POST', '/api/esim/nickname', dict(base, operation_id='op-name-002', nickname='a\u202eb'))
+        renamed = self.data('POST', '/api/esim/nickname', dict(base, operation_id='op-name-003', nickname='Home'))
+        self.assertEqual(renamed['profiles'][0]['display_name'], 'Home')
+
+    def test_esim_whole_card_states(self):
+        for mode, status in (('unsupported', 'unsupported'), ('helper-missing', 'helper_missing')):
+            view = self.esim(mode)
+            self.assertEqual((view['status'], view['available'], view['profiles']), (status, False, []))
+            self.assertFalse(view['actions']['enabled'])
+        self.assertFalse(any(p['state'] == 'enabled' for p in self.esim('no-active')['profiles']))
+        stale = self.esim('stale')
+        self.assertTrue(stale['freshness']['stale'])
+        self.assertEqual(stale['freshness']['error']['kind'], 'management_unavailable')
+
+
+    # -- eSIM phase 2: add and delete profiles --------------------------------
+
+    CODE = 'LPA:1$smdp.example.com$TEST-MATCHING-ID'
+
+    def download_until(self, state):
+        for _ in range(80):
+            view = self.data('GET', '/api/esim/profiles')
+            if view['operation']['state'] == state:
+                return view
+            time.sleep(0.05)
+        self.fail(f'download never reached {state}: {view["operation"]}')
+
+    def start_download(self, op_id='op-dl-0001', mode='card'):
+        self.esim(mode)
+        mock.CONFIG['esim_step_s'] = 0.05
+        return self.data('POST', '/api/esim/download', {'activation_code': self.CODE, 'operation_id': op_id},
+                         expect=202)
+
+    def test_esim_download_previews_installs_and_names_the_new_profile(self):
+        started = self.start_download()
+        self.assertEqual(started['operation']['kind'], 'download')
+        self.assertIsNone(started['operation']['target'])
+        self.assertTrue(started['operation']['can_cancel'])
+        preview = self.download_until('awaiting_confirmation')
+        self.assertEqual(preview['operation']['preview']['provider'], 'Test Mobile')
+        self.assertGreater(preview['operation']['preview_expires_in_ms'], 0)
+        self.assertNotIn('TEST-MATCHING-ID', json.dumps(preview), 'codes are never echoed')
+        self.data('POST', '/api/esim/download/confirm',
+                  {'operation_id': 'op-dl-0001', 'install': True, 'nickname': 'Holiday'})
+        self.assertEqual(self.error('POST', '/api/esim/download/cancel', {'operation_id': 'op-dl-0001'},
+                                    expect=409), "the profile is already being installed; it can't be cancelled")
+        done = self.download_until('succeeded')
+        new = next(p for p in done['profiles'] if p['iccid_masked'] == '…0004')
+        self.assertEqual((new['display_name'], new['state']), ('Holiday', 'disabled'))
+        self.assertEqual(done['operation']['target'], new['handle'])
+        recorded = [r for r in self.data('GET', '/__mock/requests')['requests'] if r['path'] == '/api/esim/download']
+        self.assertEqual(recorded[0]['body']['activation_code'], '<redacted>')
+
+    def test_esim_download_cancel_decline_and_refusals(self):
+        self.start_download('op-dl-0002')
+        cancelled = self.data('POST', '/api/esim/download/cancel', {'operation_id': 'op-dl-0002'})
+        self.assertEqual((cancelled['operation']['state'], cancelled['operation']['message']), ('cancelled', 'cancelled'))
+        self.start_download('op-dl-0003')
+        self.download_until('awaiting_confirmation')
+        declined = self.data('POST', '/api/esim/download/confirm', {'operation_id': 'op-dl-0003', 'install': False})
+        self.assertEqual(declined['operation']['message'], 'cancelled: declined')
+        self.start_download('op-dl-0004', mode='download-refused')
+        self.assertIn('matchingID', self.download_until('failed')['operation']['message'])
+        self.esim('no-data')
+        self.assertIn('mobile data', self.error('POST', '/api/esim/download',
+                                                {'activation_code': self.CODE, 'operation_id': 'op-dl-0005'}, expect=409))
+        self.esim()
+        for code in ('', 'LPA:2$smdp.example.com$X', 'LPA:1$10.0.0.1$X', 'LPA:1$smdp.example.com$X$$1'):
+            message = self.error('POST', '/api/esim/download', {'activation_code': code, 'operation_id': 'op-dl-0006'})
+            self.assertNotIn('smdp.example.com$', message)
+        pin = self.data('POST', '/api/auth/login', {'pin': '123456'})['token']
+        for path in ('/api/esim/download', '/api/esim/download/confirm', '/api/esim/download/cancel',
+                     '/api/esim/delete', '/api/esim/receipts/send'):
+            status, _ = self.call('POST', path, {}, {'Authorization': f'Bearer {pin}', **self.CONFIRM})
+            self.assertEqual(status, 403, path)
+
+    def test_esim_delete_only_inactive_unlocked_profiles(self):
+        view = self.esim()
+        active = {'handle': self.handle(view, '…0001'), 'revision': view['revision'], 'operation_id': 'op-del-0001'}
+        self.assertEqual(self.call('POST', '/api/esim/delete', active)[0], 400, 'X-Confirm is required')
+        self.assertEqual(self.call('POST', '/api/esim/delete', active, self.CONFIRM)[0], 409)
+        fiji = dict(active, handle=self.handle(view, '…0002'), operation_id='op-del-0002')
+        self.data('POST', '/api/esim/lock', {'handle': fiji['handle'], 'locked': True})
+        self.assertEqual(self.call('POST', '/api/esim/delete', fiji, self.CONFIRM)[0], 423)
+        test = dict(active, handle=self.handle(view, '…0003'), operation_id='op-del-0003')
+        self.data('POST', '/api/esim/delete', test, expect=202, headers=self.CONFIRM)
+        done = self.settle()
+        self.assertEqual(done['operation']['state'], 'succeeded')
+        self.assertNotIn('…0003', [p['iccid_masked'] for p in done['profiles']])
+
+    def test_esim_send_receipts_runs_and_empties_the_card(self):
+        view = self.esim()
+        self.assertEqual(view['card']['pending_receipts'], 5)
+        started = self.data('POST', '/api/esim/receipts/send', {}, expect=202)
+        self.assertTrue(started['receipts']['sending'])
+        for _ in range(60):
+            view = self.data('GET', '/api/esim/profiles')
+            if not view['receipts']['sending']:
+                break
+            time.sleep(0.05)
+        self.assertEqual((view['card']['pending_receipts'], view['receipts']['pending']), (0, 0))
+        self.data('POST', '/api/esim/receipts/send', {}, expect=200)
+
+
 if __name__ == '__main__':
     unittest.main()

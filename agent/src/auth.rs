@@ -1,14 +1,14 @@
 use std::collections::HashMap;
 use std::fs;
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 
 use crate::util::MutexExt;
 
 const SALT_PATH: &str = "/data/.zte-agent-salt";
-const TOKEN_TTL_SECS: u64 = 3600;
+const TOKEN_TTL: Duration = Duration::from_secs(3600);
 const MAX_TOKENS: usize = 10;
 const HASH_ITERATIONS: u32 = 10_000;
 const MAX_LOGIN_ATTEMPTS: u32 = 5;
@@ -25,9 +25,20 @@ pub struct AuthState {
     failed_logins: Mutex<HashMap<String, LoginAttempt>>,
 }
 
+/// Sessions expire on the monotonic clock: the wall clock jumps when the
+/// network sets the time after an attach (for example after a SIM switch), and
+/// that must not end a session early or keep one alive.
 struct Token {
     value: String,
-    expires: u64,
+    expires: Instant,
+    kind: CredentialKind,
+}
+
+/// Which credential opened a session. Some actions need the password.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CredentialKind {
+    Password,
+    Pin,
 }
 
 struct LoginAttempt {
@@ -71,7 +82,12 @@ impl AuthState {
     }
 
     pub fn login_password(&self, password: &str, client_ip: &str) -> LoginResult {
-        self.login_against(password, &self.password_hash, client_ip)
+        self.login_against(
+            password,
+            &self.password_hash,
+            client_ip,
+            CredentialKind::Password,
+        )
     }
 
     pub fn login_pin(&self, pin: &str, client_ip: &str) -> LoginResult {
@@ -79,7 +95,7 @@ impl AuthState {
             self.record_failed_login(client_ip, epoch_secs());
             return LoginResult::Invalid;
         }
-        self.login_against(pin, &self.pin_hash, client_ip)
+        self.login_against(pin, &self.pin_hash, client_ip, CredentialKind::Pin)
     }
 
     fn login_against(
@@ -87,6 +103,7 @@ impl AuthState {
         credential: &str,
         stored_hash: &Mutex<Option<String>>,
         client_ip: &str,
+        kind: CredentialKind,
     ) -> LoginResult {
         let now = epoch_secs();
 
@@ -141,13 +158,15 @@ impl AuthState {
         let token = hex_encode(&token_bytes);
 
         let mut tokens = self.tokens.safe_lock();
+        let now = Instant::now();
         tokens.retain(|t| t.expires > now);
         if tokens.len() >= MAX_TOKENS {
             tokens.remove(0);
         }
         tokens.push(Token {
             value: token.clone(),
-            expires: now + TOKEN_TTL_SECS,
+            expires: now + TOKEN_TTL,
+            kind,
         });
 
         LoginResult::Ok { token }
@@ -174,17 +193,14 @@ impl AuthState {
 
     /// Validate a bearer token, sliding its expiry forward on success. Without
     /// the slide a dashboard left open is logged out mid-poll on the hour.
-    pub fn validate(&self, token: &str) -> bool {
-        let now = epoch_secs();
+    /// Returns the credential that opened the session.
+    pub fn validate(&self, token: &str) -> Option<CredentialKind> {
+        let now = Instant::now();
         let mut tokens = self.tokens.safe_lock();
         tokens.retain(|t| t.expires > now);
-        match tokens.iter_mut().find(|t| t.value == token) {
-            Some(t) => {
-                t.expires = now + TOKEN_TTL_SECS;
-                true
-            }
-            None => false,
-        }
+        let t = tokens.iter_mut().find(|t| t.value == token)?;
+        t.expires = now + TOKEN_TTL;
+        Some(t.kind)
     }
 }
 
@@ -350,13 +366,13 @@ mod tests {
         // Age the token to one second short of expiry.
         {
             let mut tokens = auth.tokens.safe_lock();
-            tokens[0].expires = epoch_secs() + 1;
+            tokens[0].expires = Instant::now() + Duration::from_secs(1);
         }
 
-        assert!(auth.validate(&token));
+        assert_eq!(auth.validate(&token), Some(CredentialKind::Password));
         let expires = auth.tokens.safe_lock()[0].expires;
         assert!(
-            expires >= epoch_secs() + TOKEN_TTL_SECS - 2,
+            expires >= Instant::now() + TOKEN_TTL - Duration::from_secs(2),
             "validate() should push expiry back out to the full TTL"
         );
     }
@@ -365,9 +381,19 @@ mod tests {
     fn validate_rejects_expired_and_unknown_tokens() {
         let auth = authed();
         let token = token_of(auth.login_password("correct-horse", IP));
-        assert!(!auth.validate("not-a-real-token"));
+        assert_eq!(auth.validate("not-a-real-token"), None);
 
-        auth.tokens.safe_lock()[0].expires = epoch_secs() - 1;
-        assert!(!auth.validate(&token));
+        auth.tokens.safe_lock()[0].expires = Instant::now() - Duration::from_millis(1);
+        assert_eq!(auth.validate(&token), None);
+    }
+
+    #[test]
+    fn sessions_remember_which_credential_opened_them() {
+        let auth = authed();
+        auth.set_pin("123456").unwrap();
+        let by_pin = token_of(auth.login_pin("123456", IP));
+        let by_password = token_of(auth.login_password("correct-horse", IP));
+        assert_eq!(auth.validate(&by_pin), Some(CredentialKind::Pin));
+        assert_eq!(auth.validate(&by_password), Some(CredentialKind::Password));
     }
 }

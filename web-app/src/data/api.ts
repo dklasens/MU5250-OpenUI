@@ -24,6 +24,16 @@ import type {
   CpuInfo,
   DeviceInfo,
   DnsConfig,
+  EsimCard,
+  EsimOperation,
+  EsimPreview,
+  EsimOpKind,
+  EsimOpState,
+  EsimProfile,
+  EsimStatus,
+  EsimSummary,
+  EsimView,
+  EsimWarning,
   HomeData,
   KillBloatResult,
   LanConfig,
@@ -681,7 +691,143 @@ function mapHome(d: Record<string, unknown>): HomeData {
     thermal: isObj(d.thermal) ? mapThermal(d.thermal) : null,
     sources: isObj(d.sources) ? d.sources as unknown as HomeData['sources'] : {},
     charge_control_error: typeof d.charge_control_error === 'string' ? d.charge_control_error : null,
+    esim: isObj(d.esim) ? mapEsimSummary(d.esim) : null,
   }
+}
+
+// ── eSIM ──────────────────────────────────────────────────────────────────────
+
+const ESIM_STATUSES: readonly EsimStatus[] = ['detecting', 'ready', 'unsupported', 'unavailable', 'helper_missing']
+const ESIM_OP_KINDS: readonly EsimOpKind[] = ['enable', 'disable', 'nickname', 'download', 'delete']
+const ESIM_OP_STATES: readonly EsimOpState[] = [
+  'pending', 'connecting', 'awaiting_confirmation', 'installing', 'reloading', 'verifying',
+  'succeeded', 'busy', 'refused', 'failed', 'cancelled', 'unknown',
+]
+/** States in which a change is still running; everything else is resolved. */
+const ESIM_IN_FLIGHT: readonly EsimOpState[] = [
+  'pending', 'connecting', 'awaiting_confirmation', 'installing', 'reloading', 'verifying',
+]
+const ESIM_WARNINGS: readonly EsimWarning[] = ['manual_apn', 'roaming_off']
+
+function oneOf<T extends string>(v: unknown, allowed: readonly T[]): T | null {
+  return typeof v === 'string' && (allowed as readonly string[]).includes(v) ? (v as T) : null
+}
+
+const textOrNull = (v: unknown): string | null => nonEmptyStr(v)?.trim() ?? null
+const countOrNull = (v: unknown): number | null => nonNegativeInt(v) ?? null
+
+export function mapEsimSummary(d: Record<string, unknown>): EsimSummary {
+  return { status: oneOf(d.status, ESIM_STATUSES), available: d.available === true }
+}
+
+function mapEsimProfile(v: unknown): EsimProfile | null {
+  const p = obj(v)
+  const handle = nonEmptyStr(p?.handle)
+  if (!p || !handle) return null
+  const state = p.state === 'enabled' || p.state === 'disabled' ? p.state : 'unknown'
+  return {
+    handle,
+    display_name: textOrNull(p.display_name),
+    nickname: textOrNull(p.nickname),
+    name: textOrNull(p.name),
+    provider: textOrNull(p.provider),
+    iccid_masked: nonEmptyStr(p.iccid_masked) ?? '…',
+    state,
+    profile_class: nonEmptyStr(p.class) ?? 'unknown',
+    locked: p.locked === true,
+    warnings: (arr(p.warnings) ?? []).map((w) => oneOf(w, ESIM_WARNINGS)).filter((w): w is EsimWarning => w !== null),
+  }
+}
+
+function mapEsimCard(v: unknown): EsimCard | null {
+  const c = obj(v)
+  if (!c) return null
+  return {
+    id: textOrNull(c.id),
+    firmware: textOrNull(c.firmware),
+    sgp22_version: textOrNull(c.sgp22_version),
+    profile_version: textOrNull(c.profile_version),
+    free_nvm_bytes: countOrNull(c.free_nvm_bytes),
+    free_ram_bytes: countOrNull(c.free_ram_bytes),
+    pending_receipts: countOrNull(c.pending_receipts),
+  }
+}
+
+function mapEsimPreview(v: unknown): EsimPreview | null {
+  const p = obj(v)
+  if (!p) return null
+  return { provider: textOrNull(p.provider), name: textOrNull(p.name), profile_class: textOrNull(p.class) }
+}
+
+function mapEsimOperation(v: unknown): EsimOperation | null {
+  const o = obj(v)
+  const id = nonEmptyStr(o?.id)
+  const kind = oneOf(o?.kind, ESIM_OP_KINDS)
+  const state = oneOf(o?.state, ESIM_OP_STATES)
+  const target = nonEmptyStr(o?.target) ?? null
+  // Only a download may lack a target (until the installed profile has been read back).
+  if (!o || !id || !kind || !state || (!target && kind !== 'download')) return null
+  const inFlight = ESIM_IN_FLIGHT.includes(state)
+  return {
+    id,
+    kind,
+    target,
+    target_name: textOrNull(o.target_name),
+    previous: textOrNull(o.previous),
+    state,
+    // Trust the state over the flag: an in-flight state is never treated as settled.
+    resolved: !inFlight,
+    message: textOrNull(o.message),
+    step: textOrNull(o.step),
+    preview: state === 'awaiting_confirmation' || o.preview != null ? mapEsimPreview(o.preview) : null,
+    // Fail closed: cancel is offered only when the agent says so and the state allows it.
+    can_cancel: o.can_cancel === true && (state === 'connecting' || state === 'awaiting_confirmation'),
+    preview_expires_in_ms: state === 'awaiting_confirmation' ? countOrNull(o.preview_expires_in_ms) : null,
+  }
+}
+
+/** GET /api/esim/profiles (and every eSIM mutation, which answers with the same view). */
+export function mapEsimView(d: Record<string, unknown>): EsimView {
+  const fresh = obj(d.freshness) ?? {}
+  const err = obj(fresh.error)
+  const receipts = obj(d.receipts) ?? {}
+  const actions = obj(d.actions) ?? {}
+  const validated = obj(d.hardware_validated)
+  return {
+    status: oneOf(d.status, ESIM_STATUSES),
+    available: d.available === true,
+    diagnostic: textOrNull(d.diagnostic),
+    card: mapEsimCard(d.card),
+    profiles: (arr(d.profiles) ?? []).map(mapEsimProfile).filter((p): p is EsimProfile => p !== null),
+    revision: nonNegativeInt(d.revision) ?? null,
+    freshness: {
+      age_ms: countOrNull(fresh.age_ms),
+      stale: fresh.stale === true,
+      error: err ? { kind: nonEmptyStr(err.kind) ?? 'read_failed', message: str(err.message) ?? '' } : null,
+    },
+    operation: mapEsimOperation(d.operation),
+    receipts: {
+      pending: nonNegativeInt(receipts.pending) ?? 0,
+      last_error: textOrNull(receipts.last_error),
+      gave_up: receipts.gave_up === true,
+      sending: receipts.sending === true,
+    },
+    // Fail closed: actions are off unless the agent says they are on.
+    actions: { enabled: actions.enabled === true, blocked_by: textOrNull(actions.blocked_by) },
+    switching_validated: validated?.switching === true,
+  }
+}
+
+/**
+ * A client operation id (8–64 of [A-Za-z0-9_-]). The agent answers a repeated id with the
+ * operation it already started, so a retried request never applies a change twice.
+ * `crypto.randomUUID` needs a secure context, which http://192.168.0.1 is not.
+ */
+export function newOperationId(): string {
+  const bytes = new Uint8Array(16)
+  if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(bytes)
+  else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256)
+  return `op-${Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')}`
 }
 
 // ── USB ───────────────────────────────────────────────────────────────────────
@@ -911,6 +1057,36 @@ export const api = {
   simImei: () => get('/api/sim/imei'),
   modemCapabilities: () => get('/api/modem/capabilities').then(mapModemCapabilities),
   networkModeSet: (net_select: string) => put('/api/modem/network-mode', { net_select }),
+
+  // eSIM (SIM Management). Every call answers with the full view. Activate/deactivate drop the
+  // cellular connection, so they carry X-Confirm (agent DESTRUCTIVE_PATHS) and need a password session.
+  esimProfiles: () => get('/api/esim/profiles').then(mapEsimView),
+  esimRefresh: () => post('/api/esim/refresh').then(mapEsimView),
+  esimEnable: (handle: string, revision: number, operation_id: string) =>
+    post('/api/esim/enable', { handle, revision, operation_id }, { 'X-Confirm': 'true' }).then(mapEsimView),
+  esimDisable: (handle: string, revision: number, operation_id: string) =>
+    post('/api/esim/disable', { handle, revision, operation_id }, { 'X-Confirm': 'true' }).then(mapEsimView),
+  esimNickname: (handle: string, revision: number, operation_id: string, nickname: string) =>
+    post('/api/esim/nickname', { handle, revision, operation_id, nickname }).then(mapEsimView),
+  esimLock: (handle: string, locked: boolean) => post('/api/esim/lock', { handle, locked }).then(mapEsimView),
+  // Adding and deleting profiles (phase 2). Activation and confirmation codes are sent once and
+  // never come back in any answer; callers must not log or store them.
+  esimDownload: (activation_code: string, confirmation_code: string | null, operation_id: string) =>
+    post('/api/esim/download', {
+      activation_code,
+      ...(confirmation_code ? { confirmation_code } : {}),
+      operation_id,
+    }).then(mapEsimView),
+  esimDownloadConfirm: (operation_id: string, install: boolean, nickname?: string) =>
+    post('/api/esim/download/confirm', {
+      operation_id,
+      install,
+      ...(install && nickname ? { nickname } : {}),
+    }).then(mapEsimView),
+  esimDownloadCancel: (operation_id: string) => post('/api/esim/download/cancel', { operation_id }).then(mapEsimView),
+  esimDelete: (handle: string, revision: number, operation_id: string) =>
+    post('/api/esim/delete', { handle, revision, operation_id }, { 'X-Confirm': 'true' }).then(mapEsimView),
+  esimSendReceipts: () => post('/api/esim/receipts/send', {}).then(mapEsimView),
 
   // WiFi
   wifiStatus: () => get('/api/wifi/status').then(mapWifi),

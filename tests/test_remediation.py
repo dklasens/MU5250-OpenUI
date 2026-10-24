@@ -189,7 +189,7 @@ class TerminalDeployment(unittest.TestCase):
             binary = Path(temp) / 'agent'
             header = bytearray(64); header[:6] = b'\x7fELF\x02\x01'; header[18:20] = (183).to_bytes(2, 'little'); binary.write_bytes(header)
             fake = Fake()
-            args = SimpleNamespace(agent=str(binary), dashboard=None, harden=False, auto_adb=False, bundle=None,
+            args = SimpleNamespace(agent=str(binary), esim_helper=str(binary), dashboard=None, harden=False, auto_adb=False, bundle=None,
                 gateway='192.168.0.1', adb_serial=None, dry_run=True, identity_file=None)
             with patch.object(self.module, 'Transport', return_value=fake), patch.dict(os.environ, {'ZTE_AGENT_PASSWORD': 'test password'}):
                 self.module.deploy(args)

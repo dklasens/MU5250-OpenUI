@@ -477,4 +477,98 @@ export interface HomeData {
   memory: MemInfo | null
   usage: DataUsage | null
   thermal: ThermalInfo | null
+  /** eSIM capability; null from an agent without eSIM support. */
+  esim?: EsimSummary | null
+}
+
+// ── eSIM (SIM Management; agent/src/esim.rs `view()` / `summary()`) ─────────────
+
+export type EsimStatus = 'detecting' | 'ready' | 'unsupported' | 'unavailable' | 'helper_missing'
+export type EsimOpKind = 'enable' | 'disable' | 'nickname' | 'download' | 'delete'
+export type EsimOpState =
+  | 'pending'
+  | 'connecting'
+  | 'awaiting_confirmation'
+  | 'installing'
+  | 'reloading'
+  | 'verifying'
+  | 'succeeded'
+  | 'busy'
+  | 'refused'
+  | 'failed'
+  | 'cancelled'
+  | 'unknown'
+export type EsimWarning = 'manual_apn' | 'roaming_off'
+
+/** The heartbeat's capability summary: whether the SIM Management tab applies. */
+export interface EsimSummary {
+  status: EsimStatus | null
+  available: boolean
+}
+
+/** One profile. Identifiers arrive masked (`…0002`); `handle` is opaque. */
+export interface EsimProfile {
+  handle: string
+  display_name: string | null
+  nickname: string | null
+  name: string | null
+  provider: string | null
+  iccid_masked: string
+  state: 'enabled' | 'disabled' | 'unknown'
+  profile_class: string
+  locked: boolean
+  warnings: EsimWarning[]
+}
+
+/** Card facts as reported; never a derived capacity. */
+export interface EsimCard {
+  id: string | null
+  firmware: string | null
+  sgp22_version: string | null
+  profile_version: string | null
+  free_nvm_bytes: number | null
+  free_ram_bytes: number | null
+  pending_receipts: number | null
+}
+
+/** What the operator's server says it is about to install (never an ICCID). */
+export interface EsimPreview {
+  provider: string | null
+  name: string | null
+  profile_class: string | null
+}
+
+export interface EsimOperation {
+  id: string
+  kind: EsimOpKind
+  /** Profile handle; null for a download until the installed profile has been read back. */
+  target: string | null
+  target_name: string | null
+  previous: string | null
+  state: EsimOpState
+  resolved: boolean
+  message: string | null
+  /** Download only: the helper's current step name. */
+  step: string | null
+  /** Download only: the server's metadata, shown before anything is written to the card. */
+  preview: EsimPreview | null
+  /** Download only: true while it can still be cancelled (connecting / awaiting confirmation). */
+  can_cancel: boolean
+  /** Download only: time left to answer the preview, as reported when this view was read. */
+  preview_expires_in_ms: number | null
+}
+
+export interface EsimView {
+  status: EsimStatus | null
+  available: boolean
+  diagnostic: string | null
+  card: EsimCard | null
+  profiles: EsimProfile[]
+  revision: number | null
+  freshness: { age_ms: number | null; stale: boolean; error: { kind: string; message: string } | null }
+  operation: EsimOperation | null
+  receipts: { pending: number; last_error: string | null; gave_up: boolean; sending: boolean }
+  actions: { enabled: boolean; blocked_by: string | null }
+  /** Profile switching has not yet been validated on hardware (agent `hardware_validated`). */
+  switching_validated: boolean
 }

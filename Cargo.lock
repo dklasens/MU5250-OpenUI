@@ -1165,6 +1165,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "euicc"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "event-listener"
 version = "5.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6102,6 +6111,16 @@ dependencies = [
  "serde_json",
  "sha2",
  "tiny_http",
+]
+
+[[package]]
+name = "zte-esim"
+version = "0.1.0"
+dependencies = [
+ "euicc",
+ "libc",
+ "rustls",
+ "serde_json",
 ]
 
 [[package]]

@@ -10,21 +10,26 @@ canonical routing table; this document summarizes it.
   changing the HTTP Host header would not reach the listener.
 - Auth: `POST /api/auth/login` (password from `ZTE_AGENT_PASSWORD`, or an
   optional 6-digit mobile PIN); bearer tokens with a sliding 1 h expiry so a
-  dashboard left open stays logged in, rate-limited login, LAN-only CORS
+  dashboard left open stays logged in, rate-limited login, LAN-only CORS.
+  Token expiry runs on the monotonic clock, so a network time change after a
+  SIM switch neither ends nor extends a session. A session remembers whether
+  the password or the PIN opened it: eSIM activate, deactivate, lock,
+  download (and its confirm/cancel), delete and receipts/send need a password
+  session (403 for a PIN session)
 - JSON envelope: `{ "ok": true, "data": … }` / `{ "ok": false, "error": … }`
-- Destructive actions (`/api/device/reboot|shutdown`) require the
-  `X-Confirm: true` header
+- Destructive actions (`/api/device/reboot|shutdown`, `/api/system/kill-bloat`,
+  `/api/esim/enable|disable|delete`) require the `X-Confirm: true` header
 
 ## Endpoint reference
 
 Every route below has a dashboard consumer, and every call the dashboard makes
 is a route below — `scripts/check-api-contract.py` enforces both directions
-(plus that the mock agent stays in step). 58 paths / 63 method+path pairs.
+(plus that the mock agent stays in step). 69 paths / 74 method+path pairs.
 
 | Family | Endpoints |
 |---|---|
 | Auth | `POST /api/auth/login` — bearer token, sliding 1 h expiry |
-| Batch | `GET /api/dashboard` — device, battery, cpu, memory, speed, data usage, signal, wan, wan6, thermal in one request. The app's heartbeat: Home, Signal and Modem/Data all read it instead of polling their own endpoints |
+| Batch | `GET /api/dashboard` — device, battery, cpu, memory, speed, data usage, signal, wan, wan6, thermal in one request, plus `esim: {status, available}` (capability only; see eSIM). The app's heartbeat: Home, Signal and Modem/Data all read it instead of polling their own endpoints |
 | Status | `GET /api/device`, `/api/cpu`, `/api/memory`, `/api/system/top` |
 | Network | `GET /api/network/clients` |
 | Device | `GET /api/device/battery-info`, `/api/device/thermal/all`, `/api/device/battery/detail`, `/api/device/charger`; `POST /api/device/reboot`, `/api/device/shutdown` |
@@ -35,6 +40,7 @@ is a route below — `scripts/check-api-contract.py` enforces both directions
 | Router | `GET+PUT /api/router/dns`, `/api/router/lan`, `/api/router/apn/mode`; `GET+POST /api/router/apn/profiles`; `POST /api/router/apn/profiles/delete`, `/api/router/apn/profiles/activate` |
 | SMS | `POST /api/sms/list`, `/api/sms/send`, `/api/sms/delete`, `/api/sms/read` (delete falls back to direct SQLite for SIM-stored rows the firmware refuses) |
 | SIM | `GET /api/sim/info`, `/api/sim/imei` |
+| eSIM | `GET /api/esim/profiles`; `POST /api/esim/refresh`, `/api/esim/enable`, `/api/esim/disable`, `/api/esim/nickname`, `/api/esim/lock`, `/api/esim/download`, `/api/esim/download/confirm`, `/api/esim/download/cancel`, `/api/esim/delete`, `/api/esim/receipts/send` — see [eSIM profiles](#esim-profiles) |
 | USB | `GET /api/usb/status`, `PUT /api/usb/mode`, `/api/usb/default`, `/api/usb/powerbank` |
 | Power | `GET+PUT /api/device/charge-control` — manual stop/resume + limit enforcer with hysteresis, event-driven off `BSP_CHARGER_EVENT` |
 | Extras | TTL clamping (`GET /api/ttl/status`, `PUT /api/ttl/set`, `DELETE /api/ttl/clear`), AT console (`POST /api/at/send`, `GET /api/at/port`), signal/connection CSV loggers (`/api/logger/*`) |
@@ -75,6 +81,78 @@ is a route below — `scripts/check-api-contract.py` enforces both directions
   time in the system clock with `TZ=UTC`, so epoch values from the device
   differ from true UTC by the local offset.
 
+## eSIM profiles
+
+Profiles on a removable eUICC (for example a 9eSIM card) in the SIM slot. The
+card work runs in `zte-esim`, an on-demand helper (`/data/zte-esim`) that
+carries the SGP.22 card code and its TLS stack; the agent carries neither
+(`agent/src/esim.rs`). Activation and deactivation were validated on a 9eSIM
+card (U60 Pro, HK B04) on 2026-10-24, and so was a profile download; the view
+reports `hardware_validated.switching: true`.
+
+**Heartbeat.** `/api/dashboard` carries `esim: {status, available}`. `status` is
+`detecting`, `ready`, `unsupported` (an ordinary SIM), `unavailable` (the
+modem's SIM service did not answer) or `helper_missing`. Detection runs in the
+background at most once a minute and is not repeated for an ordinary SIM until
+the SIM changes. Once a card has been seen it stays `ready` through temporary
+read failures.
+
+**The view.** Every eSIM route answers with the same object:
+
+| Field | Meaning |
+|---|---|
+| `status`, `available`, `diagnostic` | as in the heartbeat, plus a reason when not ready |
+| `card` | `id` (masked, `…` + last 4), `firmware`, `sgp22_version`, `profile_version`, `free_nvm_bytes`, `free_ram_bytes`, `pending_receipts` (receipts on the card) — or `null` |
+| `profiles[]` | `handle` (opaque, stable), `display_name` (nickname, else name, else provider; never an identifier-like name), `nickname`, `name`, `provider`, `iccid_masked`, `state` (`enabled`/`disabled`), `class`, `locked`, `warnings` (`manual_apn`, `roaming_off`; on inactive operational profiles) |
+| `revision` | changes whenever the card or its profiles change; writes must quote it |
+| `freshness` | `age_ms`, `stale`, `error: {kind, message}` (`sim_reloading`, `busy`, `management_unavailable`, `read_failed`, …). A failed read keeps the last good list |
+| `operation` | the latest change: `id`, `kind` (`enable`/`disable`/`nickname`/`download`/`delete`), `target` (a handle; `null` for a download until the installed profile has been read back), `target_name`, `previous`, `state`, `resolved`, `message`, and for downloads `step` (the helper's step name), `preview` (`{provider, name, class}` from the server; never an ICCID), `can_cancel`, `preview_expires_in_ms`. These four are `null`/`false` for other kinds |
+| `receipts` | operator receipts queued by this agent (its own changes, or a Send receipts run): `pending`, `last_error`, `gave_up`, `sending` (a run is in progress) |
+| `actions` | `enabled`, `blocked_by` (`helper_missing`, `no_inventory`, `operation_in_progress`) |
+| `hardware_validated` | `switching: true` once switching was tested on the device (it was, 2026-10-24) |
+
+Raw ICCIDs and the EID never leave the agent.
+
+**Requests.**
+
+| Route | Body | Answers |
+|---|---|---|
+| `GET /api/esim/profiles` | — | 200 view; re-reads the card at most every 20 s, never behind another card session |
+| `POST /api/esim/refresh` | — | 200 view after a serialized fresh read (skipped while a change is settling) |
+| `POST /api/esim/enable` | `handle`, `revision`, `operation_id` | 202 view, settled in the background. `X-Confirm: true` and a password session required |
+| `POST /api/esim/disable` | same | same; leaves no profile active |
+| `POST /api/esim/nickname` | `handle`, `revision`, `operation_id`, `nickname` (≤ 64 bytes UTF-8, no control or invisible formatting characters; empty clears) | 200 view, or 409 with the reason |
+| `POST /api/esim/lock` | `handle`, `locked` | 200 view. An agent-side guard: a locked profile cannot be activated or deleted. Password session required |
+| `POST /api/esim/download` | `activation_code` (`LPA:1$<server>$<matching ID>[$<OID>[$1]]`), `confirmation_code` (required when the code ends `$1`), `operation_id` | 202 view; the download runs in the background. 400 invalid code or missing confirmation code; 409 a change in flight, "the router has no mobile data connection", or no card read yet; 503 helper missing. Password session required |
+| `POST /api/esim/download/confirm` | `operation_id`, `install` (bool), optional `nickname` (Rename rules) | 200 view. Only while `awaiting_confirmation` for that `operation_id` (else 409). `install: false` declines (`endUserRejection`). Password session required |
+| `POST /api/esim/download/cancel` | `operation_id` | 200 view; postpones the order with the operator, so a single-use QR stays usable. 409 once `installing` or when no download is running. Password session required |
+| `POST /api/esim/delete` | `handle`, `revision`, `operation_id` | 202 view, settled in the background. Inactive, unlocked profiles only (409 active or stale, 423 locked, 404 unknown). `X-Confirm: true` and a password session required |
+| `POST /api/esim/receipts/send` | `{}` | 202 view: delivers every receipt on the card in the background, removing each only after its server accepts it. 200 with nothing to send; 409 while a change is in flight. Never runs on its own. Password session required |
+
+**Codes are secrets.** Activation and confirmation codes are accepted once and
+never appear in any answer, log, journal or error text. The dashboard keeps
+them only in the open form; the mock agent redacts them in its request log.
+
+`operation_id` is 8–64 of `[A-Za-z0-9_-]`, chosen by the client. Repeating it
+answers 200 with the operation it already started; nothing is sent twice.
+
+Errors: 400 malformed body or missing `X-Confirm`; 403 PIN session on a
+password-only route; 404 unknown handle; 409 stale `revision`, a change still
+in progress, a reused `operation_id`, a non-operational profile or the wrong
+state; 423 locked profile; 503 helper missing or no profile list yet.
+
+**Operation states.** `pending` → `reloading` (accepted; the modem reloads the
+SIM, during which the card cannot be read for 5–25 s) or `verifying` (the
+answer was lost, or the agent restarted: reading back) → `succeeded`, `busy`
+(card refused, SIM Toolkit busy; nothing changed; never retried
+automatically), `refused`, `failed` or `unknown` (could not be read back).
+A download goes `connecting` (authenticating with the operator's server) →
+`awaiting_confirmation` (the preview; nothing written yet; cancelled after 2
+minutes without an answer) → `installing` (cannot be cancelled) →
+`succeeded`, `cancelled`, `failed` or `unknown`.
+A write is never retried and a restart reads back, never replays. "Active"
+means selected on the card, not connected.
+
 ## Safety constraints built into the agent
 
 - **AT console is allowlisted** (`server.rs`): read-only commands only;
@@ -83,7 +161,11 @@ is a route below — `scripts/check-api-contract.py` enforces both directions
 - **kill-bloat only kills daemons that are safe to kill** — never the
   `zte_topsw_daemon.conf` sync-barrier set (see SAFETY.md).
 - **Destructive endpoints require `X-Confirm: true`** (`/api/device/reboot`,
-  `/api/device/shutdown`).
+  `/api/device/shutdown`, `/api/system/kill-bloat`, `/api/esim/enable`,
+  `/api/esim/disable`, `/api/esim/delete`).
+- **eSIM switching, locks, downloads, deletes and receipt runs need a password
+  session**; the eSIM helper may only send the ES10 commands each operation
+  needs (no APDU passthrough).
 - **Login is rate-limited**: 5 failures per client IP arms a 30 s lockout.
 - **LAN-only bind + LAN-origin CORS** by default.
 - ubus inputs passed through from HTTP are size/depth-validated

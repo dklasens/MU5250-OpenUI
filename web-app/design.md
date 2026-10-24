@@ -52,7 +52,7 @@ Rules: accent covers < 5 % of any view — active nav, primary button, focus rin
 
 ## Controls
 - **Primary button:** solid accent, 6 px, one per view. Others: hairline outline or ghost. Danger is solid danger and always behind a confirm.
-- **Tabs:** underline tabs — ink label + 2 px accent underline when active. Semantics in § Selection.
+- **Tabs:** underline tabs — ink label + 2 px accent underline when active. When a group's tabs don't fit, **whole tabs wrap onto another row**; a label never breaks and the strip never scrolls sideways. Semantics in § Selection.
 - **Nav:** desktop sidebar with a hairline edge; phones get a bottom bar whose active item shows a 2 px accent rule on top.
 - Clickable labels never wrap (`whitespace-nowrap`).
 
@@ -127,6 +127,20 @@ Under `(pointer: coarse)` every interactive control has a hit area of **≥ 44 �
 - Excellent and Good use `--ok`, Fair `--warn`, Poor `--danger`. RSSI is never rated (it mixes signal, interference and noise). Unknown or unmeasured values are neutral `--text-3` with "Unavailable"; SINR 0 is a real reading.
 - Every rating shows its word as well as its colour. Ratings are approximate link indicators, not throughput predictions, and the legend says so.
 - Raw readings keep the firmware's value and units; a rating never alters or hides one.
+
+## Device-switching lists (SIM Management)
+The pattern for lists whose actions change what the modem is attached to (eSIM profiles; reuse it for anything similar).
+- **Two panels:** a compact facts panel (only what the device reports, mono values, `Unavailable` for missing ones, no derived capacity or percentages) with Refresh in its header, then the list panel.
+- **Rows on desktop, stacked on phones** with the same `flex-wrap` row as APN profiles: name + chips on the left, actions on the right, wrapping under the name at narrow widths. The selected item comes first and gets the `accent/30` border and `accent/4` wash.
+- **Selection is not connectivity.** The `Active` chip (`ok`) means selected on the device; a muted line says where connectivity is shown. Never word it as "Connected".
+- **Actions are outline buttons, not primary.** A switch that drops the connection always goes through `confirm({kind: 'connection'})` (Cancel focused) naming the current and requested item, the interruption, read-only warnings in plain words, and the way back. Inline rename uses a labelled field with a live byte count, Save (primary, only while the form is open) and Cancel; Escape cancels.
+- **One change at a time.** While a change is unresolved every write control is disabled and the change's state shows as an `InlineStatus` above the list (info while in flight, ok/warn/error once resolved, with Dismiss). A failed read keeps the last good list under a `stale` note. Never toast these.
+- **Unvalidated features say so quietly**: one muted `text-meta text-ink3` sentence, not a warning box.
+- **Adding an item is an inline, stepped panel** at the top of the list panel, never a modal: the list stays visible underneath. The panel's single submit is the view's one primary (Add in the panel header steps down to outline while a row's rename form is open, and disappears while the panel is open). Steps replace each other in place: input → progress (a short ordered step list, `aria-current="step"` on the current one) → review (mono-labelled facts from the device or server, an optional field, the commit as primary and Cancel as ghost, any time limit shown as a mono countdown) → result (an `InlineStatus` with the next action as an outline button, never automatic). Steps that cannot be cancelled say so instead of showing Cancel.
+- **Secrets in fields** (activation and confirmation codes): `type="password"` with a Show/Hide ghost toggle (`aria-pressed`), held only in component state and cleared once the device accepts them. Errors and hints describe the problem without quoting the value; a hint may name a non-secret part (for example the server host).
+- **Local-only file input** for decoding (a QR image): an outline button opens a visually hidden file input; the copy says the file is read in the browser and not uploaded. Decoders load on demand in their own chunk, never in the shared vendor chunk.
+- **Destructive row actions** (Delete): a ghost button in `text-danger`, shown only on rows where the action is allowed (never on the selected item or a locked one), always behind `confirm({kind: 'danger'})` with Cancel focused, a body that says it can't be undone, and a recovery line that says honestly what getting it back would take.
+- **On-request maintenance actions** (Send receipts): an outline button beside the fact it acts on, with one muted sentence saying exactly what it does; its progress and outcome appear as a `role="status"` line under the facts, never a toast.
 
 ## What every screen must share
 The mark, the three faces, the token palette, the 10/6/4 radii, underline tabs, mono labels, and the rule that numbers are mono.

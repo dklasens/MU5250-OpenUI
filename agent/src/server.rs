@@ -10,6 +10,7 @@ use crate::at_cmd;
 use crate::cell;
 use crate::connection_logger;
 use crate::device_ext;
+use crate::esim;
 use crate::handlers::{self, AppState};
 use crate::network_ext;
 use crate::router;
@@ -96,6 +97,22 @@ const DESTRUCTIVE_PATHS: &[&str] = &[
     "/api/device/reboot",
     "/api/device/shutdown",
     "/api/system/kill-bloat",
+    "/api/esim/enable",
+    "/api/esim/disable",
+    "/api/esim/delete",
+];
+
+/// Actions a PIN session may not take: switching the cellular profile, and the
+/// lock that guards a profile against activation.
+const PASSWORD_PATHS: &[&str] = &[
+    "/api/esim/enable",
+    "/api/esim/disable",
+    "/api/esim/lock",
+    "/api/esim/download",
+    "/api/esim/download/confirm",
+    "/api/esim/download/cancel",
+    "/api/esim/delete",
+    "/api/esim/receipts/send",
 ];
 
 fn cors_headers(origin: Option<&str>) -> Vec<Header> {
@@ -176,13 +193,13 @@ fn handle_request(mut request: Request, state: &AppState) {
     let needs_auth =
         path != "/api/auth/login" && !(method == Method::Post && path == "/api/router/lan/confirm");
     if needs_auth {
-        let authorized = request
+        let session = request
             .headers()
             .iter()
             .find(|h| h.field.as_str().to_ascii_lowercase() == "authorization")
             .and_then(|h| h.value.as_str().strip_prefix("Bearer "))
-            .map(|token| state.auth.validate(token))
-            .unwrap_or(false);
+            .and_then(|token| state.auth.validate(token));
+        let authorized = session.is_some();
 
         if !state.auth.has_password() {
             respond(
@@ -197,6 +214,16 @@ fn handle_request(mut request: Request, state: &AppState) {
                 request,
                 401,
                 json!({"ok": false, "error": "unauthorized"}),
+                origin_ref,
+            );
+            return;
+        } else if PASSWORD_PATHS.contains(&path.as_str())
+            && session != Some(crate::auth::CredentialKind::Password)
+        {
+            respond(
+                request,
+                403,
+                json!({"ok": false, "error": "this action needs a session signed in with the password, not the PIN"}),
                 origin_ref,
             );
             return;
@@ -342,6 +369,18 @@ pub fn route(
         // SIM
         (&Method::Get, "/api/sim/info") => sim::sim_info(state),
         (&Method::Get, "/api/sim/imei") => sim::sim_imei(state),
+        // eSIM profiles (SIM Management)
+        (&Method::Get, "/api/esim/profiles") => state.esim.profiles(),
+        (&Method::Post, "/api/esim/refresh") => state.esim.refresh(),
+        (&Method::Post, "/api/esim/enable") => state.esim.switch(esim::Kind::Enable, body),
+        (&Method::Post, "/api/esim/disable") => state.esim.switch(esim::Kind::Disable, body),
+        (&Method::Post, "/api/esim/nickname") => state.esim.nickname(body),
+        (&Method::Post, "/api/esim/lock") => state.esim.lock(body),
+        (&Method::Post, "/api/esim/download") => state.esim.download(body),
+        (&Method::Post, "/api/esim/download/confirm") => state.esim.download_confirm(body),
+        (&Method::Post, "/api/esim/download/cancel") => state.esim.download_cancel(body),
+        (&Method::Post, "/api/esim/delete") => state.esim.switch(esim::Kind::Delete, body),
+        (&Method::Post, "/api/esim/receipts/send") => state.esim.receipts_send(),
         // Cell / band lock
         (&Method::Post, "/api/cell/lock/nr") => cell::cell_lock_nr(state, body),
         (&Method::Post, "/api/cell/lock/lte") => cell::cell_lock_lte(state, body),

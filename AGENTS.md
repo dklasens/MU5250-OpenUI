@@ -64,8 +64,14 @@ Services the deploy path installs (all started from `/etc/rc.local`):
 Useful on-device facts:
 
 - Agent state lives in `/data/local/tmp/`: `charge_limit.json`, `usb_config.json`,
-  `start_ttl.sh`, `lan_transition.json`, `zte-agent.log`, the CSV logs, and deploy snapshots under
-  `open-u60-transactions/`.
+  `start_ttl.sh`, `lan_transition.json`, `esim_state.json`, `esim_journal.json`,
+  `zte-agent.log`, the CSV logs, and deploy snapshots under `open-u60-transactions/`.
+- **eSIM profiles on the connected card belong to the user.** Agents never activate, deactivate,
+  rename, lock, install or delete profiles, and never send receipts; card access from agents is
+  read-only (inventory). The user may keep a local, untracked `esim.md` with per-card rules
+  (which profiles must never be touched); read it if present. Activation codes are secrets: never
+  log or echo them. A killed `zte-esim` leaks a QMI logical channel until the SIM resets; stop it
+  with SIGTERM.
 - Agent logs: `/data/local/tmp/zte-agent.log`, plus `.1` for the previous
   file. Each line carries device-local time and uptime; each file is capped at
   256 KiB; the log survives reboots. The agent writes this itself (`diag_log.rs`)
@@ -107,8 +113,8 @@ Prerequisites: Rust with the `aarch64-unknown-linux-musl` target and
 ```sh
 # Checks. These mirror CI (.github/workflows/checks.yml); run them before calling work done.
 cargo fmt --all --check
-cargo test -p zte-agent -p process-runner --locked
-cargo clippy -p zte-agent -p process-runner --all-targets --locked -- -D warnings
+cargo test -p zte-agent -p process-runner -p zte-esim -p euicc --locked
+cargo clippy -p zte-agent -p process-runner -p zte-esim -p euicc --all-targets --locked -- -D warnings
 python3 scripts/check-api-contract.py        # agent routes <-> dashboard calls <-> mock agent
 python3 -m unittest discover -s tests
 (cd web-app && npm ci && npm run build && npm run lint && npm test)
@@ -117,7 +123,7 @@ python3 -m unittest discover -s tests
 (cd web-app && bash tools/demo.sh)           # stop with: bash tools/demo.sh stop
 
 # Deploy to the connected device over SSH (transactional, with snapshot + rollback)
-./deploy.sh              # builds the agent, pushes it, rewrites the startup script, restarts, verifies
+./deploy.sh              # builds the agent + zte-esim helper, pushes both, rewrites the startup script, restarts, verifies
 ./deploy-dashboard.sh    # npm ci + build, stages the release, switches /data/www.current, verifies
 # Both accept --dry-run, --gateway ADDR and --adb-serial SERIAL.
 ```
@@ -137,6 +143,9 @@ python3 -m unittest discover -s tests
 agent/src/server.rs      routing table (source of truth for the API), AT allowlist, TTL
 agent/src/handlers.rs    AppState, /api/dashboard batch, per-source TTL caches
 agent/src/cache.rs       Cached<T> / Observed<T> (TTL + last-good + freshness metadata)
+agent/src/esim.rs        eSIM manager: detection, profile cache, one change at a time, journal, receipts
+esim-helper/             zte-esim: on-demand card helper (QMI UIM over QRTR, ES10 allowlist, HTTPS receipts)
+euicc/                   LGPL-2.1 SGP.22 card library used only by zte-esim (see THIRD_PARTY_NOTICES.md)
 agent/src/*.rs           one module per domain: cell, wifi, lan, router, sms, usb, charge_policy, …
 process-runner/          bounded subprocess I/O (deadline + output cap)
 web-app/src/data/api.ts  endpoint bindings + firmware response mappers (source of truth, client side)
@@ -198,7 +207,7 @@ paths and a narrow question. Good fits:
 Keep these on the main model and don't delegate them:
 
 - Anything that runs commands on the device, deploys, or touches
-  `scripts/zunlock.py`, `zharden.sh`, rc.local handling, `usb.rs` or
-  `charge_policy.rs`.
+  `scripts/zunlock.py`, `zharden.sh`, rc.local handling, `usb.rs`,
+  `charge_policy.rs`, `esim.rs` or `esim-helper/`.
 - Changes to the auth, AT allowlist, kill-bloat or safety logic.
 - Final review of a change before telling the user it is done.
