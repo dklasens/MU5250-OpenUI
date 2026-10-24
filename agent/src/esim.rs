@@ -67,6 +67,9 @@ pub struct Timing {
     /// After the data connection returns: the first request after an attach is unreliable.
     pub receipt_settle: Duration,
     pub wan_poll: Duration,
+    /// After an eSIM change ends, how long an unreadable card still counts as reloading rather
+    /// than absent.
+    pub reload_window: Duration,
     /// How long a download's preview waits for Install or Cancel.
     pub preview_limit: Duration,
 }
@@ -79,6 +82,7 @@ impl Default for Timing {
             verify_window: Duration::from_secs(90),
             receipt_settle: Duration::from_secs(5),
             wan_poll: Duration::from_secs(15),
+            reload_window: Duration::from_secs(120),
             preview_limit: Duration::from_secs(120),
         }
     }
@@ -139,6 +143,8 @@ pub trait Env: Send + Sync {
     fn start_download(&self, request: &Value, deadline: Duration) -> Box<dyn DownloadRun>;
     /// Changes when the SIM changes or reloads (state, home network, SPN). Read from ubus.
     fn sim_key(&self) -> Option<String>;
+    /// The modem reports the SIM as ready (`sim_states: "sim ready"`).
+    fn sim_ready(&self) -> bool;
     fn wan_up(&self) -> bool;
     fn warning_inputs(&self) -> WarningInputs;
     /// Drop cached SIM, radio and WAN readings after a change.
@@ -200,6 +206,12 @@ impl Env for DeviceEnv {
             ))),
             Err(e) => Box::new(Finished(Some(HelperOutcome::Garbled(e.to_string())))),
         }
+    }
+
+    fn sim_ready(&self) -> bool {
+        crate::ubus::call("zwrt_zte_mdm.api", "get_sim_info", Some("{}"))
+            .ok()
+            .is_some_and(|v| v["sim_states"].as_str() == Some("sim ready"))
     }
 
     fn sim_key(&self) -> Option<String> {
@@ -731,6 +743,8 @@ struct Inner {
     read_error: Option<(String, String)>,
     read_attempt: Option<Instant>,
     operation: Option<Operation>,
+    /// When the last operation ended (for the reload window).
+    finished_at: Option<Instant>,
     receipts: Receipts,
 }
 
@@ -801,7 +815,7 @@ impl EsimManager {
             .and_then(unhex)
             .filter(|s| s.len() == 16)
             .unwrap_or_else(random_salt);
-        let mut inner = Inner {
+        let inner = Inner {
             salt,
             card: opt_text(&saved["card"]),
             locked: saved["locked"]
@@ -822,6 +836,7 @@ impl EsimManager {
             read_error: None,
             read_attempt: None,
             operation: None,
+            finished_at: None,
             receipts: Receipts {
                 pending: saved["receipts"]
                     .as_array()
@@ -830,10 +845,8 @@ impl EsimManager {
                 ..Default::default()
             },
         };
-        // A card seen before keeps the tab while it can't be read.
-        if inner.card.is_some() {
-            inner.status = Status::Ready;
-        }
+        // The tab appears only after a successful read, even for a card seen before: the slot may
+        // hold an ordinary SIM now.
         let manager = Arc::new(EsimManager {
             env,
             inner: Mutex::new(inner),
@@ -948,6 +961,12 @@ impl EsimManager {
     }
 
     fn absorb_read(&self, outcome: HelperOutcome) -> Result<(), (String, String)> {
+        // An ordinary SIM and an eSIM card that is reloading after a switch give the same answer
+        // (no eSIM management application, QMI error 80). Only around an eSIM change can it be a
+        // reload; otherwise a ready SIM without one is not an eSIM card. Asked before the lock.
+        let no_isdr =
+            matches!(&outcome, HelperOutcome::Failed { kind, .. } if kind == "isdr_unavailable");
+        let sim_ready = no_isdr && self.env.sim_ready();
         let mut inner = self.inner.safe_lock();
         inner.read_attempt = Some(Instant::now());
         let error = match outcome {
@@ -990,13 +1009,32 @@ impl EsimManager {
                 let known_card = inner.card.is_some();
                 match kind.as_str() {
                     "lock_busy" => ("busy".into(), message),
-                    "isdr_unavailable" if !known_card => {
-                        inner.status = Status::Unsupported;
-                        inner.diagnostic =
-                            Some("The SIM in the slot has no eSIM management application.".into());
-                        ("unsupported".into(), message)
+                    "isdr_unavailable" => {
+                        let in_change = inner
+                            .operation
+                            .as_ref()
+                            .is_some_and(|o| !o.state.resolved())
+                            || inner
+                                .finished_at
+                                .is_some_and(|t| t.elapsed() < self.timing.reload_window);
+                        if known_card && (in_change || !sim_ready) {
+                            ("sim_reloading".into(), message)
+                        } else {
+                            if inner.status != Status::Unsupported {
+                                eprintln!("[esim] the SIM in the slot is not an eSIM card");
+                            }
+                            // The card and its locks are remembered for when it comes back.
+                            inner.status = Status::Unsupported;
+                            inner.diagnostic = Some(
+                                "The SIM in the slot has no eSIM management application.".into(),
+                            );
+                            if inner.inventory.take().is_some() {
+                                inner.revision += 1;
+                            }
+                            inner.read_error = None;
+                            return Err(("unsupported".into(), message));
+                        }
                     }
-                    "isdr_unavailable" => ("sim_reloading".into(), message),
                     "management_unavailable" | "transport" | "cancelled" => {
                         if !known_card {
                             inner.status = Status::Unavailable;
@@ -1369,6 +1407,7 @@ impl EsimManager {
 
     fn finish(&self, state: OpState, message: Option<String>) {
         self.set_op(state, message);
+        self.inner.safe_lock().finished_at = Some(Instant::now());
         self.clear_journal();
     }
 
@@ -2189,6 +2228,8 @@ impl EsimManager {
                             }
                         }
                         inner.receipts.last_error = errors.first().cloned();
+                        // Re-read the card on the next view so its receipt count is current.
+                        inner.read_attempt = None;
                     }
                     HelperOutcome::Failed { kind, message, .. } if kind == "card_changed" => {
                         inner.receipts.pending.clear();

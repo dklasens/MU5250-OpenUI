@@ -75,6 +75,22 @@ test('the tab is hidden for an agent or SIM without eSIM support', async ({ page
   await expect(page.getByRole('tab', { name: 'SIM Management' })).toHaveCount(0)
 })
 
+test('an ordinary SIM swapped in hides the tab, even after it was shown this session', async ({ page, agent }) => {
+  const heartbeat = { esim: { status: 'ready', available: true } }
+  agent.on('GET', '/api/dashboard', () => ({ data: { ...fx.dashboard(), ...heartbeat } }))
+  agent.on('GET', '/api/esim/profiles', { data: view() })
+  await openSim(page)
+  await expect(page.getByRole('tab', { name: 'SIM Management' })).toBeVisible()
+  // The agent now reports the SIM in the slot is not an eSIM card.
+  heartbeat.esim = { status: 'unsupported', available: false }
+  const nav = page.getByRole('navigation')
+  await nav.getByRole('button', { name: 'Home', exact: true }).click()
+  await page.waitForResponse((r) => r.url().endsWith('/api/dashboard'))
+  await nav.getByRole('button', { name: 'Modem', exact: true }).click()
+  await expect(page.getByRole('tab', { name: 'SMS' })).toBeVisible()
+  await expect(page.getByRole('tab', { name: 'SIM Management' })).toHaveCount(0)
+})
+
 test('card facts and profiles: active first, masked ids, no invented capacity', async ({ page, agent }) => {
   withEsim(agent)
   await openSim(page)

@@ -57,6 +57,8 @@ struct FakeEnv {
     /// While set, the scripted install waits (to probe the installing state).
     hold_install: Arc<AtomicBool>,
     controls: Arc<Mutex<Vec<String>>>,
+    sim_ready: AtomicBool,
+    key: Mutex<String>,
 }
 
 /// A scripted helper download over the shared fake card.
@@ -226,6 +228,8 @@ impl FakeEnv {
             dl: Mutex::new(Dl::Normal),
             hold_install: Arc::new(AtomicBool::new(false)),
             controls: Arc::new(Mutex::new(Vec::new())),
+            sim_ready: AtomicBool::new(true),
+            key: Mutex::new("sim ready|505|02".into()),
             wan: AtomicBool::new(true),
             deliver: AtomicBool::new(true),
             inputs: WarningInputs {
@@ -363,7 +367,10 @@ impl Env for FakeEnv {
         }
     }
     fn sim_key(&self) -> Option<String> {
-        Some("sim ready|505|02".into())
+        Some(self.key.safe_lock().clone())
+    }
+    fn sim_ready(&self) -> bool {
+        self.sim_ready.load(Ordering::Relaxed)
     }
     fn wan_up(&self) -> bool {
         self.wan.load(Ordering::Relaxed)
@@ -381,6 +388,7 @@ fn fast() -> Timing {
         verify_window: Duration::from_millis(300),
         receipt_settle: Duration::from_millis(1),
         wan_poll: Duration::from_millis(5),
+        reload_window: Duration::from_millis(50),
         preview_limit: Duration::from_millis(300),
     }
 }
@@ -1193,5 +1201,111 @@ fn download_refusals_are_explained_in_plain_words() {
     assert_eq!(
         explain_download_failure("something else"),
         "Nothing was installed: something else."
+    );
+}
+
+// -- swapping the eSIM card for an ordinary SIM ----------------------------------------------
+
+/// Swaps the card in the slot: `isdr` false is an ordinary SIM.
+fn swap_card(env: &FakeEnv, isdr: bool, key: &str) {
+    env.card.safe_lock().isdr = isdr;
+    *env.key.safe_lock() = key.into();
+}
+
+#[test]
+fn an_ordinary_sim_replacing_a_known_card_hides_the_tab_and_keeps_the_locks() {
+    let env = FakeEnv::new();
+    let (state, journal) = temp_paths();
+    let m = EsimManager::with_paths(env.clone(), state.clone(), journal.clone(), fast());
+    let v = view(&m);
+    let fiji = handle_of(&v, "…0002");
+    m.lock(
+        json!({"handle": fiji, "locked": true})
+            .to_string()
+            .as_bytes(),
+    );
+
+    // Powered off, the 9eSIM out, a Vodafone SIM in: a restart sees an ordinary SIM.
+    swap_card(&env, false, "sim ready|505|03|");
+    let after = EsimManager::with_paths(env.clone(), state.clone(), journal.clone(), fast());
+    assert_eq!(
+        after.summary()["available"],
+        false,
+        "nothing shown before a read"
+    );
+    after.detect();
+    let v = after.view();
+    assert_eq!(v["status"], "unsupported", "{v}");
+    assert_eq!(v["available"], false);
+    assert!(
+        v["profiles"].as_array().unwrap().is_empty(),
+        "no stale list"
+    );
+    assert_eq!(v["freshness"]["stale"], false);
+    assert_eq!(after.summary()["status"], "unsupported");
+    // Not probed again while the same SIM stays in.
+    let probes = env.ops().len();
+    after.inner.safe_lock().detected_at = None;
+    after.detect();
+    assert_eq!(env.ops().len(), probes);
+
+    // The 9eSIM comes back: everything returns, the lock included.
+    swap_card(&env, true, "sim ready|505|02|");
+    after.inner.safe_lock().detected_at = None;
+    after.detect();
+    let v = after.view();
+    assert_eq!(v["status"], "ready");
+    assert_eq!(handle_of(&v, "…0002"), fiji);
+    assert_eq!(v["profiles"][1]["locked"], true);
+}
+
+#[test]
+fn an_unreadable_card_during_a_change_or_before_the_sim_is_ready_is_still_reloading() {
+    let env = FakeEnv::new();
+    let (m, ..) = manager(&env);
+    view(&m);
+    // The SIM isn't ready yet (as during a reload): not judged absent.
+    env.card.safe_lock().isdr = false;
+    env.sim_ready.store(false, Ordering::Relaxed);
+    m.refresh();
+    let v = m.view();
+    assert_eq!(v["status"], "ready");
+    assert_eq!(v["freshness"]["error"]["kind"], "sim_reloading");
+    assert_eq!(
+        v["profiles"].as_array().unwrap().len(),
+        3,
+        "the last good list stays"
+    );
+
+    // Right after a change ends, the reload window still applies.
+    env.sim_ready.store(true, Ordering::Relaxed);
+    m.inner.safe_lock().finished_at = Some(Instant::now());
+    m.inner.safe_lock().read_attempt = None;
+    m.refresh();
+    assert_eq!(m.view()["status"], "ready");
+    // After it, a ready SIM without eSIM management is an ordinary SIM.
+    std::thread::sleep(Duration::from_millis(60));
+    m.refresh();
+    assert_eq!(m.view()["status"], "unsupported");
+}
+
+#[test]
+fn a_delivery_round_refreshes_the_card_count() {
+    let env = FakeEnv::new();
+    let (m, ..) = manager(&env);
+    view(&m);
+    assert_eq!(m.view()["card"]["pending_receipts"], 3);
+    m.receipts_send();
+    for _ in 0..200 {
+        if m.view()["receipts"]["pending"] == 0 && env.ops().contains(&"notify".to_string()) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    std::thread::sleep(Duration::from_millis(20));
+    assert_eq!(
+        view(&m)["card"]["pending_receipts"],
+        0,
+        "re-read after the delivery"
     );
 }

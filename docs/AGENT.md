@@ -94,8 +94,13 @@ reports `hardware_validated.switching: true`.
 `detecting`, `ready`, `unsupported` (an ordinary SIM), `unavailable` (the
 modem's SIM service did not answer) or `helper_missing`. Detection runs in the
 background at most once a minute and is not repeated for an ordinary SIM until
-the SIM changes. Once a card has been seen it stays `ready` through temporary
-read failures.
+the SIM changes. A card's management application is unreachable both for an
+ordinary SIM and for a few seconds while an eSIM card reloads after a switch
+(the same QMI error 80). So the status stays `ready` with a stale list only
+during an eSIM change, for 2 minutes after one, or while the SIM is not yet
+ready; otherwise a ready SIM without it is `unsupported`. The tab then hides,
+and the remembered card and its locks return when the card is reinserted. After
+a restart the tab appears only once the card has been read.
 
 **The view.** Every eSIM route answers with the same object:
 

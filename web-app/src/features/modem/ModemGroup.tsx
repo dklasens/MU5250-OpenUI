@@ -11,7 +11,8 @@ type Tab = 'apn' | 'data' | 'ttl' | 'sms' | 'sim'
 
 /**
  * Once an eSIM card has been seen this session the tab stays, even while the heartbeat reports a
- * temporary failure (a SIM reload after a switch makes the card unreadable for a while).
+ * temporary failure (a SIM reload after a switch makes the card unreadable for a while). It goes
+ * as soon as the agent says the SIM in the slot is not an eSIM card (an ordinary SIM swapped in).
  */
 let simSeenThisSession = false
 
@@ -19,10 +20,12 @@ export default function ModemGroup() {
   const [tab, setTab] = useState<Tab>('apn')
   const home = useHome()
   const available = home.data?.esim?.available === true
+  const unsupported = home.data?.esim?.status === 'unsupported'
   const [showSim, setShowSim] = useState(simSeenThisSession)
   if (available && !showSim) setShowSim(true)
+  if (unsupported && showSim) setShowSim(false)
   useEffect(() => {
-    if (showSim) simSeenThisSession = true
+    simSeenThisSession = showSim
   }, [showSim])
 
   const tabs: TabDef<Tab>[] = [
