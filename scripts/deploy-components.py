@@ -152,6 +152,23 @@ class Transport:
         return response.get('data', {})
 
 
+# Must match HELPER_PROTOCOL in agent/src/esim.rs and PROTOCOL in esim-helper/src/main.rs.
+ESIM_HELPER_PROTOCOL = 2
+
+
+def aarch64_executable(data, what):
+    if len(data) < 64 or data[:6] != b'\x7fELF\x02\x01' or int.from_bytes(data[18:20], 'little') != 183:
+        raise ValueError(f'{what} must be an aarch64 ELF64 little-endian executable')
+    return data
+
+
+def verify_esim_helper(transport):
+    # The version request touches no card; it proves the helper runs and speaks the agent's protocol.
+    answer = json.loads(transport.shell(f"printf '%s\\n' '{{\"protocol\":{ESIM_HELPER_PROTOCOL},\"op\":\"version\"}}' | /data/zte-esim"))
+    if not answer.get('ok') or answer.get('data', {}).get('protocol') != ESIM_HELPER_PROTOCOL:
+        raise RuntimeError('The eSIM helper did not answer its version request')
+
+
 def verify_credentials(transport, password, pin):
     token = transport.api('/api/auth/login', {'password': password})['token']
     device = transport.api('/api/device', token=token)
@@ -266,21 +283,24 @@ def prepare_only(args):
     if not args.bundle_output: raise ValueError('--bundle-output is required for preparation')
     prepare_hardening(args.bundle, args.bundle_output)
     if args.release_agent:
+        wanted = {'zte-agent': args.release_agent}
+        if args.release_esim_helper: wanted['zte-esim'] = args.release_esim_helper
         with tempfile.TemporaryDirectory() as work:
             root = Path(work)
             if args.bundle:
                 sums = (Path(args.bundle) / 'sha256sums.txt').read_text()
-                binary = read_limited(Path(args.bundle) / 'zte-agent')
+                binaries = {name: read_limited(Path(args.bundle) / name) for name in wanted}
             else:
                 release = json.loads(fetch('https://api.github.com/repos/dklasens/MU5250-OpenUI/releases/latest', root / 'release.json'))
                 urls = {item['name']: item['browser_download_url'] for item in release['assets']}
                 sums = fetch(urls['sha256sums.txt'], root / 'sha256sums.txt').decode()
-                binary = fetch(urls['zte-agent'], root / 'zte-agent')
+                binaries = {name: fetch(urls[name], root / name) for name in wanted}
             checksums = {parts[1].lstrip('*'): parts[0] for line in sums.splitlines() if len(parts := line.split()) == 2}
-            if hashlib.sha256(binary).hexdigest() != checksums.get('zte-agent'): raise ValueError('Agent release checksum mismatch')
-            destination = Path(args.release_agent); destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(binary)
-            print('Agent release checksum verified before unlock.')
+            for name, binary in binaries.items():
+                if hashlib.sha256(binary).hexdigest() != checksums.get(name): raise ValueError(f'{name} release checksum mismatch')
+                destination = Path(wanted[name]); destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(binary)
+            print('Agent release checksums verified before unlock.')
     print('All deployment dependencies prepared.')
 
 
@@ -291,9 +311,10 @@ def deploy(args):
     prepared = {}
     expanded = 0
     if args.agent:
-        data = read_limited(args.agent)
-        if len(data) < 64 or data[:6] != b'\x7fELF\x02\x01' or int.from_bytes(data[18:20], 'little') != 183:
-            raise ValueError('Agent must be an aarch64 ELF64 little-endian executable')
+        data = aarch64_executable(read_limited(args.agent), 'Agent')
+        # The helper ships with the agent so the two are snapshotted and rolled back together.
+        if not args.esim_helper: raise ValueError('--esim-helper is required with --agent')
+        prepared['esim_helper'] = aarch64_executable(read_limited(args.esim_helper), 'eSIM helper')
         password = os.environ.get('ZTE_AGENT_PASSWORD') or getpass.getpass('Agent password: ')
         pin = os.environ.get('ZTE_AGENT_PIN', '')
         spec = importlib.util.spec_from_file_location('startup', ROOT / 'scripts/render-agent-startup.py')
@@ -322,7 +343,7 @@ def deploy(args):
                                 "test ! -e /data/local/tmp/open-u60-transactions/active; test ! -d /data/local/tmp/open-u60-transactions/lock; "
                                 "df -Pk /data | awk 'END {print $4}'; "
                                 "df -Pk /tmp | awk 'END {print $4}'; df -Pk /etc | awk 'END {print $4}'; "
-                                "(du -sk /data/zte-agent /data/www /data/www.current /data/bin /data/dropbear /data/local/tmp/start_*.sh /etc/dropbear /etc/rc.local /etc/config/uhttpd 2>/dev/null || true) | awk '{n+=$1} END {print n+0}'")
+                                "(du -sk /data/zte-agent /data/zte-esim /data/www /data/www.current /data/bin /data/dropbear /data/local/tmp/start_*.sh /etc/dropbear /etc/rc.local /etc/config/uhttpd 2>/dev/null || true) | awk '{n+=$1} END {print n+0}'")
     free, tmp_free, etc_free, backup = map(int, preflight.splitlines())
     payload = sum(map(len, prepared.values())) + sum(map(len, programs.values()))
     required = payload + expanded + 2 * backup * 1024 + 16 * 1024 * 1024
@@ -348,9 +369,14 @@ def deploy(args):
         if args.agent:
             # Complete and hash-check both staged files before stopping the process.
             transport.push(prepared['agent'], '/data/zte-agent.staged', True)
+            transport.push(prepared['esim_helper'], '/data/zte-esim.staged', True)
             transport.push(prepared['startup'], '/data/local/tmp/start_zte_agent.sh.staged', True)
             transport.shell('set -e; sh -n /data/local/tmp/start_zte_agent.sh.staged; killall zte-agent 2>/dev/null || true')
-            transport.shell('set -e; mv /data/zte-agent.staged /data/zte-agent; mv /data/local/tmp/start_zte_agent.sh.staged /data/local/tmp/start_zte_agent.sh')
+            # Wait for a helper the old agent started: it holds the card lock until it exits.
+            transport.shell('for i in 1 2 3 4 5 6 7 8 9 10; do pidof zte-esim >/dev/null || break; sleep 1; done')
+            transport.shell('set -e; mv /data/zte-agent.staged /data/zte-agent; mv /data/zte-esim.staged /data/zte-esim; '
+                            'mv /data/local/tmp/start_zte_agent.sh.staged /data/local/tmp/start_zte_agent.sh')
+            verify_esim_helper(transport)
             transport.push((ROOT / 'scripts/device/update-rc-local.sh').read_bytes(), '/data/local/tmp/open-u60-rc-update.sh', True)
             transport.shell("sh /data/local/tmp/open-u60-rc-update.sh 'sh /data/local/tmp/start_zte_agent.sh'")
             transport.shell('sh /data/local/tmp/start_zte_agent.sh')
@@ -393,9 +419,11 @@ def deploy(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--agent')
+    parser.add_argument('--esim-helper', help='zte-esim binary deployed with the agent')
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--bundle-output')
     parser.add_argument('--release-agent')
+    parser.add_argument('--release-esim-helper')
     parser.add_argument('--identity-file')
     parser.add_argument('--harden', action='store_true')
     parser.add_argument('--bundle', help='Directory containing the pinned Dropbear and uhttpd IPKs')

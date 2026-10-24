@@ -35,6 +35,7 @@ AGENT_PORT=9090
 SSH_PORT=2222
 TARGET=aarch64-unknown-linux-musl
 BINARY=target/$TARGET/release/zte-agent
+ESIM_HELPER=target/$TARGET/release/zte-esim
 REMOTE_BIN=/data/zte-agent
 STARTUP_SCRIPT=/data/local/tmp/start_zte_agent.sh
 BINARY_CHANGED=false
@@ -220,9 +221,9 @@ ZTE_AGENT_PASSWORD="$AGENT_PASSWORD" python3 -c 'import importlib.util,os; s=imp
 PREPARE=(python3 scripts/deploy-components.py --prepare-only --bundle-output "$WORK/packages")
 if [ -n "${ZTE_BUNDLE_PATH:-}" ]; then PREPARE+=(--bundle "$ZTE_BUNDLE_PATH"); fi
 if [ "$BUILD_CHOICE" = 1 ]; then
-    PREPARE+=(--release-agent "$BINARY")
+    PREPARE+=(--release-agent "$BINARY" --release-esim-helper "$ESIM_HELPER")
 else
-    cargo build --locked --release --target "$TARGET" -p zte-agent
+    cargo build --locked --release --target "$TARGET" -p zte-agent -p zte-esim
 fi
 "${PREPARE[@]}"
 
@@ -254,5 +255,5 @@ else
 fi
 if [ "${ZTE_DRY_RUN:-0}" = 1 ]; then EXTRA+=(--dry-run); fi
 ZTE_AGENT_PASSWORD="$AGENT_PASSWORD" python3 scripts/deploy-components.py \
-    --agent "$BINARY" --harden --bundle "$WORK/packages" --gateway "$GATEWAY" "${EXTRA[@]}"
+    --agent "$BINARY" --esim-helper "$ESIM_HELPER" --harden --bundle "$WORK/packages" --gateway "$GATEWAY" "${EXTRA[@]}"
 ok 'Agent and key-only SSH verified. Run bash deploy-dashboard.sh to install the dashboard.'

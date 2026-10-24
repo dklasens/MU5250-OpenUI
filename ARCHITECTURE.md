@@ -36,8 +36,10 @@ a singleton ubus object that makes a second instance unreliable.
 
 | Component | Language | Runs on | Role |
 |---|---|---|---|
-| `agent/` (`zte-agent`) | Rust 2021, static musl aarch64 | device | JSON API over device services. It is the only on-device code the project adds. |
-| `process-runner/` | Rust | device + desktop | Bounded subprocess execution: one deadline covers stdin, run and pipe drain, and output is capped. The process group is killed on timeout. |
+| `agent/` (`zte-agent`) | Rust 2021, static musl aarch64 | device | JSON API over device services. With its eSIM helper, it is the only on-device code the project adds. |
+| `esim-helper/` (`zte-esim`) | Rust 2021, static musl aarch64 | device | On-demand eSIM helper the agent runs per card operation: SGP.22 card commands over QMI UIM (QRTR) and operator receipts over HTTPS. Carries the LGPL `euicc/` library and the TLS stack, so the agent carries neither. No daemon, no boot hook. |
+| `euicc/` | Rust (LGPL-2.1-only) | device (in `zte-esim`) | Rust translation of lpac's libeuicc. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). |
+| `process-runner/` | Rust | device + desktop | Bounded subprocess execution: one deadline covers stdin, run and pipe drain, and output is capped. The process group is killed on timeout, or (for `zte-esim`) sent SIGTERM with a grace period first. |
 | `web-app/` | React 19, Vite, Tailwind 3 | browser, served from device | Dashboard SPA. It holds no server-side state. |
 | `installer/` | Tauri 2 (Rust + React) | macOS / Windows | Guided detect, unlock, deploy, repair and update. Bundles ADB. |
 | `scripts/` | Python 3, POSIX sh | developer machine / device | Terminal deploy (`deploy-components.py`), hardening (`zharden.sh`), unlock (`zunlock.py`), CI checks. |
@@ -138,11 +140,16 @@ and USB status (`zwrt_bsp.usb list` + configfs + UDC sysfs).
 | TTL / HL clamp | `iptables`/`ip6tables -t mangle PREROUTING -i br-lan`, persisted to `/data/local/tmp/start_ttl.sh` | Reapplied at agent start with `-C` idempotence checks |
 | SMS | `zwrt_wms` via ZTE's legacy WMS payloads | Command-status polling |
 | kill-bloat | `SIGTERM` to allowlisted optional daemons | Subtracts the live `zte_topsw_daemon.conf` sync barrier; fails closed if it cannot be read |
+| eSIM profiles | `esim.rs` runs `zte-esim` per operation (stdin JSON). Enable/disable with SIM refresh, nickname, operator receipts | One card session at a time (agent mutex + the helper's `flock`). Identity and state are re-checked in the same card session as the write. Writes are never retried; a lost answer is settled by read-back, and a restart reads back from `/data/local/tmp/esim_journal.json`, never replays. Locked profiles refuse activation. The helper gets SIGTERM and 5 s to close its logical channel: a killed session leaks the channel until the SIM resets. |
 
 ### Persistent state (device)
 
 ```
 /data/zte-agent                          binary
+/data/zte-esim                           eSIM helper binary (run on demand by the agent)
+/data/local/tmp/esim_state.json          eSIM: salt, hashed card id, locked profiles, receipts in delivery
+/data/local/tmp/esim_journal.json        eSIM change in flight (transient; read back after a restart)
+/tmp/zte-esim.lock                       eSIM card lock (flock, released by the kernel)
 /data/.zte-agent-salt                    password-hash salt
 /data/local/tmp/start_zte_agent.sh       startup script (exports ZTE_AGENT_PASSWORD / PIN), run from rc.local
 /data/local/tmp/charge_limit.json        charge policy
@@ -248,6 +255,14 @@ listener), then the dashboard uhttpd.
 - The AT console accepts only an exact-match list of read-only commands.
 - The agent password sits in cleartext in `start_zte_agent.sh`
   (root-only, `/data`).
+- Sessions record whether the password or the PIN opened them. eSIM
+  activate/deactivate and profile locks need a password session. Session
+  expiry uses the monotonic clock, because the wall clock jumps when the
+  network sets the time after a SIM change.
+- eSIM identifiers stay on the device: clients get opaque handles and the
+  last four digits. The EID is persisted only as a salted hash. Receipts go
+  only to DNS-named public addresses over TLS that trusts the GSMA eSIM root
+  alone.
 
 ## Known limitations
 

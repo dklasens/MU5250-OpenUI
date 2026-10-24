@@ -13,7 +13,8 @@ export function tabIds(idBase: string, id: string) {
 }
 
 /**
- * Horizontally scrollable underline tab strip (design.md § Controls, § Selection).
+ * Underline tab strip (design.md § Controls, § Selection). When the tabs do not fit, whole tabs wrap
+ * onto another row; a label never breaks and the strip never scrolls sideways.
  *
  * Pattern: WAI-ARIA tabs with **manual activation** and a roving tab stop. Left/Right (wrapping),
  * Home and End move focus only; Enter/Space activates. Pair every tab with a `TabPanel` using the
@@ -64,7 +65,7 @@ export function Tabs<T extends string>({
 
   return (
     <div
-      className="no-scrollbar flex gap-5 overflow-x-auto border-b border-line/8"
+      className="flex flex-wrap gap-x-5 border-b border-line/8"
       role="tablist"
       aria-label={label}
       onKeyDown={onKeyDown}

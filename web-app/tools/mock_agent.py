@@ -15,10 +15,21 @@ Usage:  python3 web-app/tools/mock_agent.py [--port 9090] [--host 0.0.0.0]
 Environment:
   MOCK_SCENARIO   radio scenario served by /api/dashboard `signal`
                   (default SA; also NSA, LTE, disconnected)
+  MOCK_ESIM       eSIM card served by /api/esim/* (default card; also no-active,
+                  empty, unsupported, helper-missing, unavailable, stale, busy,
+                  unknown, no-data, download-refused). busy/unknown decide how the
+                  next switch ends; no-data refuses downloads (no mobile data);
+                  download-refused makes the server refuse the activation code.
+
+Sessions: a PIN login gets a PIN session token; the eSIM write paths that need a
+password session (enable, disable, lock, download, download/confirm,
+download/cancel, delete, receipts/send) then answer 403 like the agent.
+Activation and confirmation codes are redacted in the recorded request log.
 
 Test hooks (not part of the agent API; the contract checker only reads /api/):
   GET  /__mock/requests   every recorded non-GET request: method, path, body, status
-  POST /__mock/reset      restore initial state (optional body {"scenario": "..."})
+  POST /__mock/reset      restore initial state (optional body {"scenario": "...",
+                          "esim": "..."})
 
 Routes the mock answers *without* simulating any state (fire-and-forget; the
 request is still recorded): POST /api/device/reboot, /api/device/shutdown,
@@ -53,7 +64,18 @@ CONFIG = {
     # (agent: 1 s scheduling delay plus USB re-enumeration).
     "usb_switch_settle_s": 1.5,
     "scenario": os.environ.get("MOCK_SCENARIO", "SA"),
+    "esim": os.environ.get("MOCK_ESIM", "card"),
+    # A switch reads as `reloading` for half of this, then settles (agent: SIM reload, read-back).
+    "esim_settle_s": 4.0,
+    # Each download step before and after the preview takes this long.
+    "esim_step_s": 0.6,
+    # An unanswered preview is cancelled after this (agent: 2 minutes).
+    "esim_preview_s": 120.0,
 }
+
+ESIM_DEFAULT = CONFIG["esim"]
+ESIM_MODES = ("card", "no-active", "empty", "unsupported", "helper-missing", "unavailable",
+              "stale", "busy", "unknown", "no-data", "download-refused")
 
 LOCK = threading.RLock()
 REQUESTS = []
@@ -425,6 +447,8 @@ def dashboard_batch():
             "thermal": freshness(10000), "data_usage": freshness(30000), "speed": freshness(1000),
         },
         "charge_control_error": STATE["charge_control"]["last_error"],
+        # agent/src/esim.rs::summary — capability only.
+        "esim": {"status": STATE["esim"]["status"], "available": STATE["esim"]["status"] == "ready"},
     }
 
 
@@ -1330,8 +1354,434 @@ def csv_download(name, text):
 STATE = {}
 
 
-def initial_state(scenario):
+# ── eSIM (agent/src/esim.rs; identifiers are masked exactly as the agent masks them) ──
+
+ESIM_OP_ID = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+
+
+def esim_defaults(mode):
+    if mode not in ESIM_MODES:
+        raise ValueError(f"unknown MOCK_ESIM {mode!r}; expected one of {', '.join(ESIM_MODES)}")
+    profiles = [
+        {"handle": "p3f1a9c2d7e40b6a1", "nickname": None, "name": "Amaysim", "provider": "Amaysim",
+         "iccid_masked": "…0001", "state": "enabled", "class": "operational", "locked": False,
+         "warnings": []},
+        # The card's profile name is the ICCID; the agent drops identifier-like names.
+        {"handle": "p8b20e4f1c9d3a775", "nickname": "Vodafone Fiji", "name": None,
+         "provider": "Vodafone Fiji", "iccid_masked": "…0002", "state": "disabled",
+         "class": "operational", "locked": False, "warnings": ["manual_apn", "roaming_off"]},
+        {"handle": "p05c7d9e2a1b4f638", "nickname": None, "name": None, "provider": None,
+         "iccid_masked": "…0003", "state": "disabled", "class": "test", "locked": False,
+         "warnings": []},
+    ]
+    if mode == "no-active":
+        profiles[0]["state"] = "disabled"
+    if mode == "empty":
+        profiles = []
+    status = {"unsupported": "unsupported", "helper-missing": "helper_missing",
+              "unavailable": "unavailable"}.get(mode, "ready")
     return {
+        "mode": mode,
+        "status": status,
+        "profiles": profiles if status == "ready" else [],
+        "revision": 7,
+        "operation": None,
+        "op_started": 0.0,
+        "op_outcome": None,
+        "receipts_pending": 0,
+        "card_receipts": 5,
+        "receipts_sending": False,
+        "receipts_started": 0.0,
+    }
+
+
+def esim_label(p):
+    return p["nickname"] or p["name"] or p["provider"]
+
+
+def esim_advance():
+    """Move in-flight work along: a switch (pending → reloading → outcome), a download, a
+    delete, and a receipt run."""
+    e = STATE["esim"]
+    if e["receipts_sending"] and time.time() - e["receipts_started"] >= CONFIG["esim_settle_s"] / 2:
+        e.update(receipts_sending=False, card_receipts=0, receipts_pending=0)
+    op = e["operation"]
+    if not op or op["resolved"]:
+        return
+    if op["kind"] == "download":
+        return esim_advance_download(e, op)
+    if op["kind"] == "delete":
+        if time.time() - e["op_started"] >= CONFIG["esim_settle_s"] / 2:
+            e["profiles"] = [p for p in e["profiles"] if p["handle"] != op["target"]]
+            e["revision"] += 1
+            e["card_receipts"] += 1
+            e["receipts_pending"] += 1
+            op.update(state="succeeded", resolved=True, message="The profile was deleted.")
+        return
+    elapsed = time.time() - e["op_started"]
+    settle = CONFIG["esim_settle_s"]
+    outcome = e["op_outcome"]
+    if outcome == "busy":
+        if elapsed >= settle / 4:
+            op.update(state="busy", resolved=True, message="The card is busy (its SIM Toolkit is in a session). "
+                      "Nothing changed; it usually accepts a retry within a few minutes. Right after the last "
+                      "profile was deactivated this took about 4 minutes on the tested card.")
+        return
+    if elapsed < settle / 2:
+        op.update(state="reloading", message="The card accepted the change; the modem is reloading the SIM.")
+        return
+    if elapsed < settle:
+        return
+    if outcome == "unknown":
+        op.update(state="unknown", resolved=True,
+                  message="The card could not be read back. The change may or may not have happened; refresh in a minute.")
+        return
+    for p in e["profiles"]:
+        if op["kind"] == "enable":
+            p["state"] = "enabled" if p["handle"] == op["target"] else "disabled"
+        elif p["handle"] == op["target"]:
+            p["state"] = "disabled"
+    e["revision"] += 1
+    e["receipts_pending"] += 2 if op["kind"] == "enable" else 1
+    e["card_receipts"] += 2 if op["kind"] == "enable" else 1
+    op.update(state="succeeded", resolved=True,
+              message="The profile is active on the card." if op["kind"] == "enable" else "No profile is active.")
+
+
+# The helper's step names (agent/src/esim.rs, esim-helper download op), in order.
+DOWNLOAD_STEPS_BEFORE = ("es10b_get_euicc_challenge_and_info", "es9p_initiate_authentication",
+                         "es10b_authenticate_server", "es9p_authenticate_client", "es8p_metadata_parse")
+DOWNLOAD_STEPS_AFTER = ("es10b_prepare_download", "es9p_get_bound_profile_package",
+                        "es10b_load_bound_profile_package")
+# What the (synthetic) operator's server says it will install.
+DOWNLOAD_PREVIEW = {"provider": "Test Mobile", "name": "Travel 7 days", "class": "operational"}
+DOWNLOAD_HANDLE = "p6e2c8a41f07d93b5"
+
+
+def esim_advance_download(e, op):
+    now = time.time()
+    step_s = CONFIG["esim_step_s"]
+    if op["state"] == "connecting":
+        i = int((now - e["op_started"]) / step_s)
+        if e["mode"] == "download-refused" and i >= 3:
+            op.update(state="failed", resolved=True, step="es9p_authenticate_client",
+                      message="es9p_authenticate_client: The matchingID is not found")
+            return
+        if i < len(DOWNLOAD_STEPS_BEFORE):
+            op["step"] = DOWNLOAD_STEPS_BEFORE[i]
+            return
+        op.update(state="awaiting_confirmation", step="preview", preview=dict(DOWNLOAD_PREVIEW),
+                  preview_started=now)
+        return
+    if op["state"] == "awaiting_confirmation":
+        if now - op["preview_started"] >= CONFIG["esim_preview_s"]:
+            op.update(state="cancelled", resolved=True, step="es9p_cancel_session",
+                      message="cancelled: not confirmed in time")
+        return
+    if op["state"] == "installing":
+        i = int((now - op["install_started"]) / step_s)
+        if i < len(DOWNLOAD_STEPS_AFTER):
+            op["step"] = DOWNLOAD_STEPS_AFTER[i]
+            return
+        e["profiles"].append({
+            "handle": DOWNLOAD_HANDLE, "nickname": op.get("nickname"), "name": DOWNLOAD_PREVIEW["name"],
+            "provider": DOWNLOAD_PREVIEW["provider"], "iccid_masked": "…0004", "state": "disabled",
+            "class": "operational", "locked": False, "warnings": [],
+        })
+        e["revision"] += 1
+        e["card_receipts"] += 1
+        e["receipts_pending"] += 1
+        op.update(state="succeeded", resolved=True, target=DOWNLOAD_HANDLE,
+                  message="The profile is installed on the card, inactive.")
+
+
+def esim_op_view(op, by_handle):
+    target = by_handle.get(op["target"]) if op["target"] else None
+    awaiting = op["state"] == "awaiting_confirmation"
+    return {
+        **{k: op[k] for k in ("id", "kind", "target", "previous", "state", "resolved", "message")},
+        "target_name": (esim_label(target) or target["iccid_masked"]) if target else None,
+        "step": op.get("step"),
+        "preview": op.get("preview"),
+        "can_cancel": op["kind"] == "download" and op["state"] in ("connecting", "awaiting_confirmation"),
+        "preview_expires_in_ms": max(0, int((CONFIG["esim_preview_s"] - (time.time() - op["preview_started"])) * 1000))
+        if awaiting else None,
+    }
+
+
+def esim_view():
+    esim_advance()
+    e = STATE["esim"]
+    op = e["operation"]
+    in_flight = bool(op and not op["resolved"])
+    ready = e["status"] == "ready"
+    stale_kind = None
+    if e["mode"] == "stale":
+        stale_kind = "management_unavailable"
+    elif in_flight and op["state"] == "reloading":
+        stale_kind = "sim_reloading"
+    blocked = ("helper_missing" if e["status"] == "helper_missing"
+               else "no_inventory" if not ready
+               else "operation_in_progress" if in_flight else None)
+    by_handle = {p["handle"]: p for p in e["profiles"]}
+    profiles = sorted(
+        e["profiles"],
+        key=lambda p: (p["state"] != "enabled", esim_label(p) is None, (esim_label(p) or "").lower()),
+    )
+    return {
+        "status": e["status"],
+        "available": ready,
+        "diagnostic": {"unsupported": "The SIM in the slot has no eSIM management application.",
+                       "helper_missing": "/data/zte-esim is not installed",
+                       "unavailable": "QRTR node 3 has no UIM service"}.get(e["status"]),
+        "card": {
+            "id": "…0000", "firmware": "37.4.3", "sgp22_version": "2.3.0", "profile_version": "2.3.1",
+            "free_nvm_bytes": 1_428_096, "free_ram_bytes": 32_601, "pending_receipts": e["card_receipts"],
+        } if ready else None,
+        "profiles": [
+            {
+                "handle": p["handle"], "display_name": esim_label(p), "nickname": p["nickname"],
+                "name": p["name"], "provider": p["provider"], "iccid_masked": p["iccid_masked"],
+                "state": p["state"], "class": p["class"], "locked": p["locked"],
+                "warnings": p["warnings"] if p["state"] == "disabled" and p["class"] == "operational" else [],
+            }
+            for p in profiles
+        ],
+        "revision": e["revision"],
+        "freshness": {
+            "age_ms": 1200 if ready else None,
+            "stale": stale_kind is not None,
+            "error": {"kind": stale_kind, "message": "modem did not answer in time"} if stale_kind else None,
+        },
+        "operation": None if not op else esim_op_view(op, by_handle),
+        "receipts": {"pending": e["receipts_pending"], "last_error": None, "gave_up": False,
+                     "sending": e["receipts_sending"]},
+        "actions": {"enabled": blocked is None, "blocked_by": blocked},
+        "hardware_validated": {"switching": True},
+    }
+
+
+def esim_admit(body, kind):
+    """The agent's `admit`: (target, previous handle) or an ApiError, in the agent's order."""
+    obj = need_object(body, None)
+    op_id = obj.get("operation_id")
+    if not isinstance(op_id, str) or not ESIM_OP_ID.match(op_id):
+        raise ApiError(400, "operation_id must be 8-64 letters, digits, '-' or '_'")
+    handle = obj.get("handle")
+    if not isinstance(handle, str):
+        raise ApiError(400, "missing handle")
+    revision = obj.get("revision")
+    if not isinstance(revision, int) or isinstance(revision, bool):
+        raise ApiError(400, "missing revision")
+    esim_advance()
+    e = STATE["esim"]
+    op = e["operation"]
+    if op and op["id"] == op_id:
+        if op["kind"] == kind and op["target"] == handle:
+            raise Repeat()
+        raise ApiError(409, "operation_id was already used for another change")
+    if op and not op["resolved"]:
+        raise ApiError(409, "another eSIM change is still in progress")
+    if e["status"] == "helper_missing":
+        raise ApiError(503, "eSIM management is unavailable: the helper is missing")
+    if e["status"] != "ready":
+        raise ApiError(503, "the profile list has not been read yet")
+    if revision != e["revision"]:
+        raise ApiError(409, "the profile list changed; refresh and try again")
+    target = next((p for p in e["profiles"] if p["handle"] == handle), None)
+    if target is None:
+        raise ApiError(404, "no such profile")
+    if kind == "enable":
+        if target["class"] != "operational":
+            raise ApiError(409, "only operational profiles can be activated")
+        if target["state"] != "disabled":
+            raise ApiError(409, "the profile is not inactive")
+        if target["locked"]:
+            raise ApiError(423, "the profile is locked against activation")
+    if kind == "disable" and target["state"] != "enabled":
+        raise ApiError(409, "the profile is not active")
+    if kind == "delete":
+        if target["state"] != "disabled":
+            raise ApiError(409, "the active profile can't be deleted; activate another profile first")
+        if target["locked"]:
+            raise ApiError(423, "the profile is locked; unlock it to delete it")
+    active = next((p["handle"] for p in e["profiles"] if p["state"] == "enabled"), None)
+    return obj, target, active
+
+
+class Repeat(Exception):
+    """A repeated operation_id: answered with the operation already started (200)."""
+
+
+def esim_switch(kind):
+    def handler(body):
+        try:
+            _, target, active = esim_admit(body, kind)
+        except Repeat:
+            return esim_view()
+        e = STATE["esim"]
+        e["operation"] = {"id": body["operation_id"], "kind": kind, "target": target["handle"],
+                          "previous": active, "state": "pending", "resolved": False, "message": None}
+        e["op_started"] = time.time()
+        e["op_outcome"] = {"busy": "busy", "unknown": "unknown"}.get(e["mode"], "succeeded")
+        return Reply(202, esim_view())
+    return handler
+
+
+ESIM_HIDDEN = re.compile("[\x00-\x1f\x7f-\x9f\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff]")
+
+
+def post_esim_nickname(body):
+    obj = need_object(body, None)
+    name = obj.get("nickname")
+    if not isinstance(name, str):
+        raise ApiError(400, "missing nickname")
+    if len(name.encode("utf-8")) > 64:
+        raise ApiError(400, "nickname must be at most 64 bytes of UTF-8")
+    if ESIM_HIDDEN.search(name):
+        raise ApiError(400, "nickname contains control or invisible formatting characters")
+    try:
+        _, target, _ = esim_admit(obj, "nickname")
+    except Repeat:
+        return esim_view()
+    e = STATE["esim"]
+    target["nickname"] = name or None
+    e["revision"] += 1
+    e["operation"] = {"id": obj["operation_id"], "kind": "nickname", "target": target["handle"],
+                      "previous": None, "state": "succeeded", "resolved": True, "message": None}
+    return esim_view()
+
+
+def post_esim_lock(body):
+    obj = need_object(body, None)
+    handle, locked = obj.get("handle"), obj.get("locked")
+    if not isinstance(handle, str) or not isinstance(locked, bool):
+        raise ApiError(400, "expected handle and locked")
+    target = next((p for p in STATE["esim"]["profiles"] if p["handle"] == handle), None)
+    if target is None:
+        raise ApiError(404, "no such profile")
+    target["locked"] = locked
+    return esim_view()
+
+
+ESIM_HOST_LABEL = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+
+
+def esim_check_code(code, confirmation):
+    """The agent's activation-code check. Errors never quote the code."""
+    if not isinstance(code, str) or not code.strip():
+        raise ApiError(400, "missing activation_code")
+    code = code.strip()
+    if len(code) > 512 or ESIM_HIDDEN.search(code):
+        raise ApiError(400, "invalid activation code")
+    fields = code.split("$")
+    if fields[0].upper() != "LPA:1" or len(fields) < 3:
+        raise ApiError(400, "an activation code must start with LPA:1$ and name a server and a matching ID")
+    host = fields[1].split(":")[0]
+    labels = host.split(".")
+    if len(labels) < 2 or not all(ESIM_HOST_LABEL.match(l) for l in labels) or labels[-1].isdigit():
+        raise ApiError(400, "the server in this activation code is not a valid host name")
+    if len(fields) > 4 and fields[4] == "1":
+        if not isinstance(confirmation, str) or not confirmation:
+            raise ApiError(400, "this activation code needs a confirmation code")
+        if len(confirmation.encode("utf-8")) > 64 or ESIM_HIDDEN.search(confirmation):
+            raise ApiError(400, "invalid confirmation code")
+
+
+def post_esim_download(body):
+    obj = need_object(body, None)
+    op_id = obj.get("operation_id")
+    if not isinstance(op_id, str) or not ESIM_OP_ID.match(op_id):
+        raise ApiError(400, "operation_id must be 8-64 letters, digits, '-' or '_'")
+    esim_advance()
+    e = STATE["esim"]
+    op = e["operation"]
+    if op and op["id"] == op_id:
+        if op["kind"] == "download":
+            return esim_view()
+        raise ApiError(409, "operation_id was already used for another change")
+    esim_check_code(obj.get("activation_code"), obj.get("confirmation_code"))
+    if op and not op["resolved"]:
+        raise ApiError(409, "another eSIM change is still in progress")
+    if e["status"] == "helper_missing":
+        raise ApiError(503, "eSIM management is unavailable: the helper is missing")
+    if e["status"] != "ready":
+        raise ApiError(409, "the card has not been read yet")
+    if e["mode"] == "no-data":
+        raise ApiError(409, "the router has no mobile data connection")
+    e["operation"] = {"id": op_id, "kind": "download", "target": None, "previous": None,
+                      "state": "connecting", "resolved": False, "message": None,
+                      "step": DOWNLOAD_STEPS_BEFORE[0], "preview": None}
+    e["op_started"] = time.time()
+    return Reply(202, esim_view())
+
+
+def esim_running_download(obj):
+    op_id = obj.get("operation_id")
+    esim_advance()
+    op = STATE["esim"]["operation"]
+    if not op or op["kind"] != "download" or op["id"] != op_id:
+        raise ApiError(409, "no download with this operation_id is running")
+    return op
+
+
+def post_esim_download_confirm(body):
+    obj = need_object(body, None)
+    install = obj.get("install")
+    if not isinstance(install, bool):
+        raise ApiError(400, "expected install: true or false")
+    nickname = obj.get("nickname")
+    if nickname is not None:
+        if not isinstance(nickname, str) or len(nickname.encode("utf-8")) > 64 or ESIM_HIDDEN.search(nickname):
+            raise ApiError(400, "nickname must be at most 64 bytes of UTF-8, without control characters")
+    op = esim_running_download(obj)
+    if op["state"] != "awaiting_confirmation":
+        raise ApiError(409, "the download is not waiting for confirmation")
+    if install:
+        op.update(state="installing", step=DOWNLOAD_STEPS_AFTER[0], install_started=time.time(),
+                  nickname=nickname or None)
+    else:
+        op.update(state="cancelled", resolved=True, step="es9p_cancel_session", message="cancelled: declined")
+    return esim_view()
+
+
+def post_esim_download_cancel(body):
+    op = esim_running_download(need_object(body, None))
+    if op["state"] == "installing":
+        raise ApiError(409, "the profile is already being installed; it can't be cancelled")
+    if op["resolved"]:
+        raise ApiError(409, "no download is running")
+    op.update(state="cancelled", resolved=True, step="es9p_cancel_session", message="cancelled")
+    return esim_view()
+
+
+def post_esim_delete(body):
+    try:
+        obj, target, _ = esim_admit(body, "delete")
+    except Repeat:
+        return esim_view()
+    e = STATE["esim"]
+    e["operation"] = {"id": obj["operation_id"], "kind": "delete", "target": target["handle"],
+                      "previous": None, "state": "pending", "resolved": False, "message": None}
+    e["op_started"] = time.time()
+    return Reply(202, esim_view())
+
+
+def post_esim_receipts_send(body):
+    esim_advance()
+    e = STATE["esim"]
+    op = e["operation"]
+    if op and not op["resolved"]:
+        raise ApiError(409, "another eSIM change is still in progress")
+    if e["status"] != "ready" or e["card_receipts"] == 0 or e["receipts_sending"]:
+        return esim_view()
+    e.update(receipts_sending=True, receipts_started=time.time())
+    return Reply(202, esim_view())
+
+
+def initial_state(scenario, esim_mode=None):
+    return {
+        "esim": esim_defaults(esim_mode or CONFIG["esim"]),
         "scenario": scenario,
         "netinfo": netinfo_for(scenario),
         "usage": usage_defaults(),
@@ -1349,11 +1799,13 @@ def initial_state(scenario):
     }
 
 
-def reset_state(scenario=None):
+def reset_state(scenario=None, esim_mode=None):
     """Restore the initial state (and clear the request log)."""
     scenario = scenario or CONFIG["scenario"]
-    new = initial_state(scenario)  # validates the scenario before touching anything
+    esim_mode = esim_mode or CONFIG["esim"]
+    new = initial_state(scenario, esim_mode)  # validates both before touching anything
     CONFIG["scenario"] = scenario
+    CONFIG["esim"] = esim_mode
     STATE.clear()
     STATE.update(new)
     del REQUESTS[:]
@@ -1366,7 +1818,10 @@ def post_login(body):
     obj = need_object(body, None)
     if "password" not in obj and "pin" not in obj:
         raise ApiError(400, "missing 'password' or 'pin' field")
-    return {"token": "demo-token"}
+    return {"token": PIN_TOKEN if "pin" in obj else "demo-token"}
+
+
+PIN_TOKEN = "demo-pin-token"
 
 
 # ── Route tables (scripts/check-api-contract.py parses these; keep the layout) ─
@@ -1422,6 +1877,7 @@ ROUTES_GET = {
     "/api/logger/signal/download": csv_download("signal_log.csv", SIGNAL_LOG_CSV),
     "/api/logger/connection/download": csv_download("connection_log.csv", CONNECTION_LOG_CSV),
     "/api/at/port": lambda: {"port": "/dev/at_mdm0", "available": True},
+    "/api/esim/profiles": esim_view,
 }
 
 ROUTES_POST = {
@@ -1445,6 +1901,16 @@ ROUTES_POST = {
     "/api/device/reboot": lambda body: {},
     "/api/device/shutdown": lambda body: {},
     "/api/at/send": post_at_send,
+    "/api/esim/refresh": lambda body: esim_view(),
+    "/api/esim/enable": esim_switch("enable"),
+    "/api/esim/disable": esim_switch("disable"),
+    "/api/esim/nickname": post_esim_nickname,
+    "/api/esim/lock": post_esim_lock,
+    "/api/esim/download": post_esim_download,
+    "/api/esim/download/confirm": post_esim_download_confirm,
+    "/api/esim/download/cancel": post_esim_download_cancel,
+    "/api/esim/delete": post_esim_delete,
+    "/api/esim/receipts/send": post_esim_receipts_send,
     "/api/logger/signal/start": logger_start("signal"),
     "/api/logger/signal/stop": logger_stop("signal"),
     "/api/logger/connection/start": logger_start("connection"),
@@ -1452,9 +1918,16 @@ ROUTES_POST = {
 }
 
 # agent/src/server.rs::DESTRUCTIVE_PATHS: rejected without `X-Confirm: true`.
-DESTRUCTIVE_PATHS = ("/api/device/reboot", "/api/device/shutdown", "/api/system/kill-bloat")
+DESTRUCTIVE_PATHS = ("/api/device/reboot", "/api/device/shutdown", "/api/system/kill-bloat",
+                     "/api/esim/enable", "/api/esim/disable", "/api/esim/delete")
+# agent/src/server.rs::PASSWORD_PATHS: a PIN session gets 403.
+PASSWORD_PATHS = ("/api/esim/enable", "/api/esim/disable", "/api/esim/lock", "/api/esim/download",
+                  "/api/esim/download/confirm", "/api/esim/download/cancel", "/api/esim/delete",
+                  "/api/esim/receipts/send")
+# Request fields that are secrets: never kept in the recorded request log.
+SECRET_FIELDS = ("activation_code", "confirmation_code")
 # POSTs that only read; not recorded as mutations.
-READ_ONLY_POSTS = ("/api/sms/list", "/api/auth/login")
+READ_ONLY_POSTS = ("/api/sms/list", "/api/auth/login", "/api/esim/refresh")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1500,6 +1973,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 if handler is None:
                     raise ApiError(404, "not found")
+                if path in PASSWORD_PATHS and self.headers.get("Authorization") == f"Bearer {PIN_TOKEN}":
+                    raise ApiError(403, "this action needs a session signed in with the password, not the PIN")
                 if path in DESTRUCTIVE_PATHS and self.headers.get("X-Confirm") != "true":
                     raise ApiError(400, "destructive action requires X-Confirm: true header")
                 if method == "GET":
@@ -1512,6 +1987,9 @@ class Handler(BaseHTTPRequestHandler):
             except ApiError as error:
                 reply = Reply(error.status, envelope={"ok": False, "error": error.message})
             if mutating and len(REQUESTS) < MAX_RECORDED:
+                if isinstance(body, dict) and any(k in body for k in SECRET_FIELDS):
+                    body = {k: ("<redacted>" if k in SECRET_FIELDS else v) for k, v in body.items()}
+                    raw = None
                 REQUESTS.append({
                     "seq": len(REQUESTS) + 1, "method": method, "path": path,
                     "body": body if body is not None else (raw or None),
@@ -1530,9 +2008,11 @@ class Handler(BaseHTTPRequestHandler):
         if method == "POST" and path == "/__mock/reset":
             body, _ = self._read_body()
             scenario = body.get("scenario") if isinstance(body, dict) else None
+            # Each reset starts from the launch-time card unless the body names one.
+            esim_mode = (body.get("esim") if isinstance(body, dict) else None) or ESIM_DEFAULT
             try:
                 with LOCK:
-                    reset_state(scenario)
+                    reset_state(scenario, esim_mode)
             except ValueError as error:
                 return self._send({"ok": False, "error": str(error)}, 400)
             return self._send({"ok": True, "data": {"scenario": CONFIG["scenario"]}})

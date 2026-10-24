@@ -160,6 +160,26 @@ pub fn output(
     timeout: Duration,
     limit: usize,
 ) -> io::Result<Output> {
+    output_with_grace(command, input, timeout, Duration::ZERO, limit)
+}
+
+/// The error text when a child ignored SIGTERM for its whole grace period and
+/// had to be killed.
+pub const KILLED_AFTER_GRACE: &str = "subprocess killed after its grace period";
+
+/// Like [`output`], but at the deadline the process group gets SIGTERM and up
+/// to `grace` to finish, with its output still collected, before SIGKILL. For
+/// children that must release something themselves before exiting, such as a
+/// SIM logical channel. A child that exits within the grace period returns its
+/// output normally; one that outlives it fails with [`KILLED_AFTER_GRACE`].
+#[cfg(unix)]
+pub fn output_with_grace(
+    command: &mut Command,
+    input: Option<&[u8]>,
+    timeout: Duration,
+    grace: Duration,
+    limit: usize,
+) -> io::Result<Output> {
     use std::os::fd::AsRawFd;
     use std::os::unix::process::CommandExt;
     let deadline = Instant::now() + timeout;
@@ -198,12 +218,25 @@ pub fn output(
                 }
             }
         }
+        let mut stop_by: Option<Instant> = None;
         loop {
-            if Instant::now() >= deadline {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "subprocess deadline exceeded",
-                ));
+            let now = Instant::now();
+            match stop_by {
+                None if now >= deadline => {
+                    if grace.is_zero() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "subprocess deadline exceeded",
+                        ));
+                    }
+                    group.terminate();
+                    stdin.take();
+                    stop_by = Some(now + grace);
+                }
+                Some(limit) if now >= limit => {
+                    return Err(io::Error::new(io::ErrorKind::TimedOut, KILLED_AFTER_GRACE));
+                }
+                _ => {}
             }
             if let Some(writer) = stdin.as_mut() {
                 if offset < input.len() {
@@ -252,7 +285,8 @@ pub fn output(
                     revents: 0,
                 },
             ];
-            let wait = deadline
+            let wait = stop_by
+                .unwrap_or(deadline)
                 .saturating_duration_since(Instant::now())
                 .as_millis()
                 .min(10) as i32;
@@ -276,6 +310,210 @@ pub fn output(
         }
     }
     result
+}
+
+/// What [`LineSession::next_line`] saw.
+#[cfg(unix)]
+#[derive(Debug, PartialEq, Eq)]
+pub enum LineEvent {
+    Line(String),
+    /// Nothing arrived before the caller's `until`.
+    Wait,
+    /// The child closed its output (it exited, or is exiting).
+    Eof,
+}
+
+/// A long-running child the caller talks to in lines: the request and later control lines on
+/// stdin, progress and the answer on stdout. Stderr is inherited. One deadline covers the whole
+/// session; when it passes the process group gets SIGTERM and `grace` to finish before SIGKILL,
+/// as with [`output_with_grace`]. Lines and the total output are capped.
+#[cfg(unix)]
+pub struct LineSession {
+    child: Child,
+    group: ProcessGroup,
+    stdin: Option<std::process::ChildStdin>,
+    lines: std::sync::mpsc::Receiver<io::Result<String>>,
+    deadline: Instant,
+    grace: Duration,
+    stop_by: Option<Instant>,
+    done: bool,
+}
+
+#[cfg(unix)]
+impl LineSession {
+    pub fn spawn(
+        command: &mut Command,
+        first_line: &[u8],
+        timeout: Duration,
+        grace: Duration,
+        line_limit: usize,
+        total_limit: usize,
+    ) -> io::Result<Self> {
+        use std::io::BufRead;
+        use std::os::unix::process::CommandExt;
+        let deadline = Instant::now() + timeout;
+        command
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+        let mut child = command.spawn()?;
+        let group = ProcessGroup::new(&child)?;
+        let mut stdin = child.stdin.take();
+        let stdout = child.stdout.take().expect("piped stdout");
+        let (tx, lines) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut reader = std::io::BufReader::new(stdout);
+            let mut total = 0usize;
+            loop {
+                let mut line = String::new();
+                match (&mut reader)
+                    .take(line_limit as u64 + 1)
+                    .read_line(&mut line)
+                {
+                    Ok(0) => return,
+                    Ok(n) => {
+                        total += n;
+                        if n > line_limit || total > total_limit {
+                            let _ =
+                                tx.send(Err(io::Error::other("subprocess output limit exceeded")));
+                            return;
+                        }
+                        let line = line.trim_end_matches(['\r', '\n']).to_string();
+                        if tx.send(Ok(line)).is_err() {
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err(e));
+                        return;
+                    }
+                }
+            }
+        });
+        if let Some(writer) = stdin.as_mut() {
+            if let Err(e) = writer.write_all(first_line).and_then(|()| writer.flush()) {
+                group.kill();
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(e);
+            }
+        }
+        Ok(LineSession {
+            child,
+            group,
+            stdin,
+            lines,
+            deadline,
+            grace,
+            stop_by: None,
+            done: false,
+        })
+    }
+
+    /// Sends one control line. Fails once stdin is closed or the child is gone.
+    pub fn send_line(&mut self, line: &str) -> io::Result<()> {
+        let writer = self
+            .stdin
+            .as_mut()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "stdin closed"))?;
+        writer.write_all(line.as_bytes())?;
+        writer.write_all(b"\n")?;
+        writer.flush()
+    }
+
+    /// Closes stdin: the child sees end of input.
+    pub fn close_stdin(&mut self) {
+        self.stdin.take();
+    }
+
+    /// The next stdout line, waiting until `until` at most. When the session deadline passes
+    /// the child is asked to stop (SIGTERM) and its remaining lines still arrive; after the
+    /// grace period it is killed.
+    pub fn next_line(&mut self, until: Instant) -> io::Result<LineEvent> {
+        loop {
+            let now = Instant::now();
+            match self.stop_by {
+                None if now >= self.deadline => {
+                    self.group.terminate();
+                    self.stdin.take();
+                    self.stop_by = Some(now + self.grace);
+                }
+                Some(limit) if now >= limit => {
+                    self.group.kill();
+                    return Err(io::Error::new(io::ErrorKind::TimedOut, KILLED_AFTER_GRACE));
+                }
+                _ => {}
+            }
+            let limit = self.stop_by.unwrap_or(self.deadline).min(until);
+            let wait = limit
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(200));
+            match self.lines.recv_timeout(wait) {
+                Ok(Ok(line)) => return Ok(LineEvent::Line(line)),
+                Ok(Err(e)) => {
+                    self.group.kill();
+                    return Err(e);
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Ok(LineEvent::Eof),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if Instant::now() >= until && until < self.stop_by.unwrap_or(self.deadline) {
+                        return Ok(LineEvent::Wait);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Waits for the child to exit (stdin closed first), under the same deadline and grace.
+    pub fn finish(mut self) -> io::Result<std::process::ExitStatus> {
+        self.stdin.take();
+        loop {
+            if let Some(status) = self.child.try_wait()? {
+                self.done = true;
+                return Ok(status);
+            }
+            let now = Instant::now();
+            match self.stop_by {
+                None if now >= self.deadline => {
+                    self.group.terminate();
+                    self.stop_by = Some(now + self.grace);
+                }
+                Some(limit) if now >= limit => {
+                    self.group.kill();
+                    let _ = self.child.kill();
+                    let _ = self.child.wait();
+                    self.done = true;
+                    return Err(io::Error::new(io::ErrorKind::TimedOut, KILLED_AFTER_GRACE));
+                }
+                _ => {}
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for LineSession {
+    /// A session dropped early is stopped the same way: SIGTERM, grace, then SIGKILL.
+    fn drop(&mut self) {
+        if self.done {
+            return;
+        }
+        self.stdin.take();
+        if matches!(self.child.try_wait(), Ok(None)) {
+            self.group.terminate();
+            let limit = Instant::now() + self.grace;
+            while matches!(self.child.try_wait(), Ok(None)) && Instant::now() < limit {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            if matches!(self.child.try_wait(), Ok(None)) {
+                self.group.kill();
+                let _ = self.child.kill();
+            }
+        }
+        let _ = self.child.wait();
+    }
 }
 
 #[cfg(unix)]
@@ -315,6 +553,11 @@ impl ProcessGroup {
     fn kill(&self) {
         unsafe {
             libc::kill(-self.0, libc::SIGKILL);
+        }
+    }
+    fn terminate(&self) {
+        unsafe {
+            libc::kill(-self.0, libc::SIGTERM);
         }
     }
 }
@@ -388,6 +631,112 @@ mod tests {
         assert!(result.status.success());
         assert_eq!(result.stdout, b"hello");
         assert_eq!(result.stderr, b"error");
+    }
+    #[test]
+    fn a_child_that_honours_sigterm_reports_its_own_output() {
+        let start = Instant::now();
+        let result = output_with_grace(
+            Command::new("sh").args(["-c", "trap 'echo closed; exit 3' TERM; sleep 5 & wait"]),
+            None,
+            Duration::from_millis(150),
+            Duration::from_secs(2),
+            1024,
+        )
+        .unwrap();
+        assert_eq!(result.stdout, b"closed\n");
+        assert_eq!(result.status.code(), Some(3));
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
+    #[test]
+    fn a_child_that_ignores_sigterm_is_killed_after_its_grace() {
+        let start = Instant::now();
+        let error = output_with_grace(
+            Command::new("sh").args(["-c", "trap '' TERM; sleep 5"]),
+            None,
+            Duration::from_millis(100),
+            Duration::from_millis(200),
+            1024,
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), KILLED_AFTER_GRACE);
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
+    fn session(script: &str, timeout_ms: u64) -> LineSession {
+        LineSession::spawn(
+            Command::new("sh").args(["-c", script]),
+            b"request\n",
+            Duration::from_millis(timeout_ms),
+            Duration::from_millis(500),
+            256,
+            4096,
+        )
+        .unwrap()
+    }
+    #[test]
+    fn a_session_exchanges_lines_and_finishes() {
+        let mut s = session(
+            "read r; echo \"got $r\"; echo progress; read c; echo \"ctl $c\"; exit 4",
+            5000,
+        );
+        let soon = || Instant::now() + Duration::from_secs(2);
+        assert_eq!(
+            s.next_line(soon()).unwrap(),
+            LineEvent::Line("got request".into())
+        );
+        assert_eq!(
+            s.next_line(soon()).unwrap(),
+            LineEvent::Line("progress".into())
+        );
+        assert_eq!(
+            s.next_line(Instant::now() + Duration::from_millis(100))
+                .unwrap(),
+            LineEvent::Wait,
+            "the child is waiting for a control line"
+        );
+        s.send_line("install").unwrap();
+        assert_eq!(
+            s.next_line(soon()).unwrap(),
+            LineEvent::Line("ctl install".into())
+        );
+        assert_eq!(s.next_line(soon()).unwrap(), LineEvent::Eof);
+        assert_eq!(s.finish().unwrap().code(), Some(4));
+    }
+    #[test]
+    fn closing_stdin_reaches_the_child_as_end_of_input() {
+        let mut s = session("read r; if read c; then echo more; else echo eof; fi", 5000);
+        s.close_stdin();
+        let line = s
+            .next_line(Instant::now() + Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(line, LineEvent::Line("eof".into()));
+    }
+    #[test]
+    fn a_session_past_its_deadline_gets_sigterm_then_its_last_words() {
+        let start = Instant::now();
+        let mut s = session(
+            "trap 'echo stopped; exit 0' TERM; read r; sleep 5 & wait",
+            200,
+        );
+        let far = Instant::now() + Duration::from_secs(10);
+        assert_eq!(s.next_line(far).unwrap(), LineEvent::Line("stopped".into()));
+        assert_eq!(s.next_line(far).unwrap(), LineEvent::Eof);
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
+    #[test]
+    fn a_session_that_ignores_sigterm_is_killed_after_grace() {
+        let mut s = session("trap '' TERM; read r; sleep 5", 100);
+        let err = s
+            .next_line(Instant::now() + Duration::from_secs(10))
+            .unwrap_err();
+        assert_eq!(err.to_string(), KILLED_AFTER_GRACE);
+    }
+    #[test]
+    fn session_lines_are_capped() {
+        let mut s = session("read r; head -c 1000 /dev/zero | tr '\\0' x; echo", 5000);
+        let err = s
+            .next_line(Instant::now() + Duration::from_secs(2))
+            .unwrap_err();
+        assert!(err.to_string().contains("output limit"));
     }
     #[test]
     fn terminates_excess_output() {

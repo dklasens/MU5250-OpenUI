@@ -17,6 +17,8 @@ DEVICE_ID = re.compile(
 LITERAL_SUFFIX = re.compile(
     rb"(?im)\bZTE_BACKUP_SUFFIX\s*=\s*([\"'])([^\"'\r\n]+)\1"
 )
+# Test fixtures use obvious placeholders; real identifiers never hold ten zeros in a row.
+SYNTHETIC_ID = re.compile(rb"0{10}")
 PRIVATE_KEY = re.compile(rb"-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----")
 TOKEN = re.compile(
     rb"(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
@@ -43,7 +45,7 @@ def main() -> int:
         except (FileNotFoundError, IsADirectoryError):
             continue
 
-        if DEVICE_ID.search(data):
+        if any(not SYNTHETIC_ID.search(m.group(1)) for m in DEVICE_ID.finditer(data)):
             failures.append(f"{path.relative_to(ROOT)}: hard-coded device identity")
         for match in LITERAL_SUFFIX.finditer(data):
             value = match.group(2).strip()

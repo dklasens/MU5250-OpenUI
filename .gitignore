@@ -39,3 +39,9 @@ dist/
 dashboard-access.json
 deployment-result.json
 back_parameter*
+
+# Reference material for the eSIM port (third-party fork and APK); never built from or committed
+/inspiration/
+
+# Personal eSIM plan and per-card rules (kept local; the repo is public)
+/esim.md

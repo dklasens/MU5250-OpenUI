@@ -36,21 +36,27 @@ jobs:
         with:
           tool: cargo-zigbuild
 
-      - name: Build zte-agent
-        run: cargo zigbuild --release --target aarch64-unknown-linux-musl -p zte-agent --locked
+      - name: Build zte-agent and zte-esim
+        run: cargo zigbuild --release --target aarch64-unknown-linux-musl -p zte-agent -p zte-esim --locked
 
-      - name: Sanity-check binary
+      - name: Sanity-check binaries
         run: |
-          BIN=target/aarch64-unknown-linux-musl/release/zte-agent
-          file "$BIN"
-          readelf -h "$BIN" | grep -E 'Class|Machine|Type'
-          readelf -d "$BIN" || true
-          ls -l "$BIN"
+          for BIN in target/aarch64-unknown-linux-musl/release/zte-agent target/aarch64-unknown-linux-musl/release/zte-esim; do
+            file "$BIN"
+            readelf -h "$BIN" | grep -E 'Class|Machine|Type'
+            readelf -d "$BIN" || true
+            ls -l "$BIN"
+          done
 
       - uses: actions/upload-artifact@v4
         with:
           name: zte-agent
           path: target/aarch64-unknown-linux-musl/release/zte-agent
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zte-esim
+          path: target/aarch64-unknown-linux-musl/release/zte-esim
 
   dashboard:
     runs-on: ubuntu-latest
@@ -93,6 +99,10 @@ jobs:
         run: |
           mkdir assets
           cp artifacts/zte-agent/zte-agent assets/zte-agent
+          cp artifacts/zte-esim/zte-esim assets/zte-esim
+          # zte-esim links the LGPL-2.1 euicc library: ship its license and the notices.
+          cp euicc/LICENSE assets/LICENSE-LGPL-2.1.txt
+          cp THIRD_PARTY_NOTICES.md assets/THIRD_PARTY_NOTICES.md
           cp artifacts/dashboard-dist/dashboard-dist.tar.gz assets/
           python3 - <<'PYTHON'
           import os
@@ -104,7 +114,7 @@ jobs:
               for image in images: archive.write(image, image.name)
           PYTHON
           cd assets
-          sha256sum zte-agent dashboard-dist.tar.gz installer-wireframes.zip > sha256sums.txt
+          sha256sum zte-agent zte-esim dashboard-dist.tar.gz installer-wireframes.zip LICENSE-LGPL-2.1.txt THIRD_PARTY_NOTICES.md > sha256sums.txt
           cat sha256sums.txt
 
       - name: Release notes
@@ -120,6 +130,10 @@ jobs:
 
           - `zte-agent` — agent binary (aarch64 musl). Deploy to `/data/zte-agent`,
             or run `bash setup.sh` and choose the pre-built download.
+          - `zte-esim` — the agent's on-demand eSIM helper (aarch64 musl), deployed
+            with the agent to `/data/zte-esim`. It links the LGPL-2.1 `euicc`
+            library; see `THIRD_PARTY_NOTICES.md` and `LICENSE-LGPL-2.1.txt`.
+            The complete corresponding source is this release's tag.
           - `dashboard-dist.tar.gz` — dashboard static build consumed by the
             native installer. For terminal deployment, run `scripts/zharden.sh`
             once to install the isolated dashboard server, then use

@@ -8,6 +8,7 @@ mod connection_logger;
 mod csv_utils;
 mod device_ext;
 mod diag_log;
+mod esim;
 mod event_bus;
 mod handlers;
 mod lan;
@@ -85,6 +86,7 @@ fn main() {
     usb::enforce_usb_mode_on_boot();
 
     state.lan.recover();
+    state.esim.recover();
     server::start(threads.clamp(1, 16), state);
 }
 

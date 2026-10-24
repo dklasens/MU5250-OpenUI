@@ -10,9 +10,10 @@ use std::path::{Component, Path, PathBuf};
 
 pub const MAX_DOWNLOAD: u64 = 64 * 1024 * 1024;
 const MAX_EXPANDED: u64 = 64 * 1024 * 1024;
-const NAMES: [&str; 5] = [
+const NAMES: [&str; 6] = [
     "sha256sums.txt",
     "zte-agent",
+    "zte-esim",
     "dashboard-dist.tar.gz",
     "dropbear.ipk",
     "uhttpd.ipk",

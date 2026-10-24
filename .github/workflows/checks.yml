@@ -27,8 +27,8 @@ jobs:
           cache: npm
           cache-dependency-path: web-app/package-lock.json
       - run: cargo fmt --all --check
-      - run: cargo test -p zte-agent -p process-runner --locked
-      - run: cargo clippy -p zte-agent -p process-runner --all-targets --locked -- -D warnings
+      - run: cargo test -p zte-agent -p process-runner -p zte-esim -p euicc --locked
+      - run: cargo clippy -p zte-agent -p process-runner -p zte-esim -p euicc --all-targets --locked -- -D warnings
       - run: python3 -m unittest discover -s tests -v
       - run: python3 scripts/check-api-contract.py
       - run: python3 scripts/check-device-secrets.py

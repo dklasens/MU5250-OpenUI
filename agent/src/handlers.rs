@@ -33,6 +33,15 @@ pub struct DashboardCache {
     cycle_dates: Cached<(Option<String>, Option<String>)>,
 }
 
+impl DashboardCache {
+    /// After a SIM change: the WAN readings are wrong by definition.
+    pub fn invalidate_network(&self) {
+        self.wan.invalidate();
+        self.wan6.invalidate();
+        self.data_usage.invalidate();
+    }
+}
+
 pub struct AppState {
     pub binding: Arc<crate::lan::Binding>,
     pub lan: Arc<crate::lan::LanManager>,
@@ -42,17 +51,35 @@ pub struct AppState {
     pub firmware: FirmwareInfo,
     pub proc_tracker: ProcessTracker,
     pub at_port: AtPort,
-    pub dash: DashboardCache,
+    pub dash: Arc<DashboardCache>,
     pub radio: Arc<Observed<Value>>,
     pub charge_limit: Arc<ChargeLimitEnforcer>,
     pub signal_logger: Arc<SignalLogger>,
     pub connection_logger: Arc<ConnectionLogger>,
+    pub esim: Arc<crate::esim::EsimManager>,
 }
 
 impl AppState {
     pub fn new() -> Self {
         let binding = Arc::new(crate::lan::Binding::new());
         let lan = Arc::new(crate::lan::LanManager::new(binding.clone()));
+        let dash = Arc::new(DashboardCache::default());
+        let radio = Arc::new(Observed::default());
+        let env_u32 = |key: &str, default: u32| {
+            std::env::var(key)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(default)
+        };
+        let esim = crate::esim::EsimManager::new(Arc::new(crate::esim::DeviceEnv {
+            helper_path: std::env::var("ZTE_AGENT_ESIM_HELPER")
+                .unwrap_or_else(|_| crate::esim::HELPER_PATH.into())
+                .into(),
+            node: env_u32("ZTE_AGENT_ESIM_QRTR_NODE", 3),
+            slot: env_u32("ZTE_AGENT_ESIM_UIM_SLOT", 1).clamp(1, 2) as u8,
+            radio: radio.clone(),
+            dash: dash.clone(),
+        }));
         Self {
             binding,
             lan,
@@ -62,11 +89,12 @@ impl AppState {
             firmware: FirmwareInfo::new(),
             proc_tracker: ProcessTracker::new(),
             at_port: AtPort::new(),
-            dash: DashboardCache::default(),
-            radio: Arc::new(Observed::default()),
+            dash,
+            radio,
             charge_limit: Arc::new(ChargeLimitEnforcer::new()),
             signal_logger: Arc::new(SignalLogger::new()),
             connection_logger: Arc::new(ConnectionLogger::new()),
+            esim,
         }
     }
 }
@@ -388,6 +416,8 @@ pub fn dashboard(state: &AppState) -> (u16, Value) {
             "speed": speed.freshness,
         }),
     );
+    // Capability only; the SIM Management tab reads the profiles itself.
+    result.insert("esim".into(), state.esim.summary());
     result.insert(
         "charge_control_error".into(),
         json!(state.charge_limit.last_error()),

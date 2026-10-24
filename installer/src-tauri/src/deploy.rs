@@ -27,6 +27,8 @@ const DASHBOARD_HTTPD_URL: &str = "https://downloads.openwrt.org/releases/23.05.
 const DASHBOARD_HTTPD_SHA256: &str =
     "bd3f010e71a5ea2ef6405e44dbe8c9e697454ce954c197f177ff0c13b9cf5991";
 const REMOTE_BIN: &str = "/data/zte-agent";
+/// The on-demand eSIM helper, installed and rolled back with the agent.
+const REMOTE_ESIM_HELPER: &str = "/data/zte-esim";
 const STARTUP_SCRIPT: &str = "/data/local/tmp/start_zte_agent.sh";
 const DASHBOARD_STARTUP_SCRIPT: &str = "/data/local/tmp/start_dashboard.sh";
 
@@ -405,7 +407,12 @@ fn latest_release(tag: Option<&str>) -> Result<ReleaseAssets, InstallerError> {
         .into_iter()
         .map(|asset| (asset.name, asset.browser_download_url))
         .collect::<HashMap<_, _>>();
-    for required in ["zte-agent", "dashboard-dist.tar.gz", "sha256sums.txt"] {
+    for required in [
+        "zte-agent",
+        "zte-esim",
+        "dashboard-dist.tar.gz",
+        "sha256sums.txt",
+    ] {
         if !urls.contains_key(required) {
             return Err(InstallerError::new(
                 "The latest release is incomplete",
@@ -489,7 +496,7 @@ fn fetch_release_assets(
         })
         .collect::<HashMap<_, _>>();
     let mut files = HashMap::new();
-    for name in ["zte-agent", "dashboard-dist.tar.gz"] {
+    for name in ["zte-agent", "zte-esim", "dashboard-dist.tar.gz"] {
         let expected = sums.get(name).ok_or_else(|| {
             InstallerError::new(
                 "A release checksum is missing",
@@ -712,6 +719,36 @@ fn deploy_agent(
         &format!("sha256sum {REMOTE_BIN} 2>/dev/null | awk '{{print $1}}'"),
         false,
     )?;
+    let helper = &files["zte-esim"];
+    let helper_bytes =
+        fs::read(helper).map_err(|error| InstallerError::internal("reading zte-esim", error))?;
+    let helper_sha = hex::encode(Sha256::digest(&helper_bytes));
+    let remote_helper_sha = channel.shell(
+        &format!("sha256sum {REMOTE_ESIM_HELPER} 2>/dev/null | awk '{{print $1}}'"),
+        false,
+    )?;
+    if remote_helper_sha.trim() != helper_sha {
+        reporter.log("[*] Staging and verifying the eSIM helper on the modem…");
+        let staged = format!("{REMOTE_ESIM_HELPER}.new");
+        channel.push(helper, &staged)?;
+        // A helper started by the running agent holds the card lock until it exits.
+        channel.shell(&format!("set -e\ntest \"$(sha256sum {staged} | awk '{{print $1}}')\" = {helper_sha}\nchmod 700 {staged}\nfor i in 1 2 3 4 5 6 7 8 9 10; do pidof zte-esim >/dev/null || break; sleep 1; done\nmv -f {staged} {REMOTE_ESIM_HELPER}"), true)?;
+        reporter.log("[+] eSIM helper installed");
+    }
+    // The version request touches no card; it proves the helper runs and speaks the agent's
+    // protocol (HELPER_PROTOCOL in agent/src/esim.rs).
+    let version = channel.shell(
+        &format!("printf '%s\\n' '{{\"protocol\":2,\"op\":\"version\"}}' | {REMOTE_ESIM_HELPER}"),
+        true,
+    )?;
+    if !version.contains("\"protocol\":2") {
+        return Err(InstallerError::new(
+            "The eSIM helper did not start",
+            "Copy the log and retry. SIM Management stays unavailable until the helper runs.",
+            format!("{REMOTE_ESIM_HELPER} answered: {}", version.trim()),
+        ));
+    }
+
     let changed = remote_sha != local_sha;
     if changed {
         reporter.log("[*] Staging and verifying the agent binary on the modem…");
@@ -1108,7 +1145,7 @@ fn storage_preflight(
         .values()
         .try_fold(0_u64, |sum, path| fs::metadata(path).map(|m| sum + m.len()))
         .map_err(|e| InstallerError::internal("sizing installation files", e))?;
-    let output = channel.shell("set -e\nfor tool in sh sha256sum tar cp mv readlink awk df du sync ubus uci; do command -v \"$tool\" >/dev/null; done\ntest -x /usr/bin/curl\nsh -n /etc/rc.local\ntest -w /data\ntest -w /etc\ntest ! -e /data/local/tmp/open-u60-transactions/active\ntest ! -d /data/local/tmp/open-u60-transactions/lock\ndf -Pk /data | awk 'END {print $4}'\ndf -Pk /tmp | awk 'END {print $4}'\ndf -Pk /etc | awk 'END {print $4}'\n(du -sk /data/zte-agent /data/www /data/www.current /data/bin /data/dropbear /data/local/tmp/start_*.sh /etc/rc.local /etc/dropbear /etc/config/uhttpd 2>/dev/null || true) | awk '{n+=$1} END {print n+0}'", true)?;
+    let output = channel.shell("set -e\nfor tool in sh sha256sum tar cp mv readlink awk df du sync ubus uci; do command -v \"$tool\" >/dev/null; done\ntest -x /usr/bin/curl\nsh -n /etc/rc.local\ntest -w /data\ntest -w /etc\ntest ! -e /data/local/tmp/open-u60-transactions/active\ntest ! -d /data/local/tmp/open-u60-transactions/lock\ndf -Pk /data | awk 'END {print $4}'\ndf -Pk /tmp | awk 'END {print $4}'\ndf -Pk /etc | awk 'END {print $4}'\n(du -sk /data/zte-agent /data/zte-esim /data/www /data/www.current /data/bin /data/dropbear /data/local/tmp/start_*.sh /etc/rc.local /etc/dropbear /etc/config/uhttpd 2>/dev/null || true) | awk '{n+=$1} END {print n+0}'", true)?;
     let values = output
         .lines()
         .map(str::parse::<u64>)
