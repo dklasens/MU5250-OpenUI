@@ -1,20 +1,12 @@
 import { useState } from 'react'
+import { useFastHeartbeat, useHome } from '../../app/HomeContext'
 import { api } from '../../data/api'
-import { usePoll } from '../../data/poll'
-import { tempColorClass } from '../../format'
-import type { BatteryBspInfo, BatteryDetail, ChargeControlState, CpuInfo, MemInfo, ThermalAll } from '../../types'
-import { formatBytes } from '../../format'
+import { usePoll, type PollResult } from '../../data/poll'
+import { formatBytes, tempColorClass } from '../../format'
+import type { BatteryBspInfo, BatteryDetail, ChargeControlState, ThermalAll } from '../../types'
 import { Button, Field, Toggle } from '../../ui/controls'
-import { Card, InlineStatus, Meter, Skeleton } from '../../ui/primitives'
+import { Card, InlineStatus, Loading, Meter, Skeleton } from '../../ui/primitives'
 import { LIMIT_MAX, LIMIT_MIN, LIMIT_STEP, limitToApply } from './chargeLimit'
-
-interface MetricsData {
-  thermal: ThermalAll | null
-  battery: BatteryDetail | null
-  batteryInfo: BatteryBspInfo | null
-  cpu: CpuInfo | null
-  mem: MemInfo | null
-}
 
 function ThermalBar({ label, value }: { label: string; value?: number | null }) {
   if (value == null) {
@@ -182,84 +174,126 @@ function ChargeControlCard() {
   )
 }
 
-// ── Tab ───────────────────────────────────────────────────────────────────────
+// ── Sources ───────────────────────────────────────────────────────────────────
 
-export default function MetricsTab() {
-  const { data } = usePoll<MetricsData>(
-    'metrics',
-    async () => {
-      const [t, b, bi, c, m] = await Promise.allSettled([
-        api.thermalAll(),
-        api.batteryDetail(),
-        api.batteryInfoUbus(),
-        api.cpu(),
-        api.memory(),
-      ])
-      return {
-        thermal: t.status === 'fulfilled' ? t.value : null,
-        battery: b.status === 'fulfilled' ? b.value : null,
-        batteryInfo: bi.status === 'fulfilled' ? bi.value : null,
-        cpu: c.status === 'fulfilled' ? c.value : null,
-        mem: m.status === 'fulfilled' ? m.value : null,
-      }
-    },
-    5000,
-  )
+/**
+ * One owner per resource. CPU and memory come from the heartbeat (`useHome`),
+ * which this tab switches to its fast cadence while it is showing; the other
+ * sources are not in the heartbeat and poll on their own, each at the rate its
+ * readings actually change. A failed source never blanks the others.
+ */
+const THERMAL_MS = 5000
+const BATTERY_DETAIL_MS = 10000
+/** Fuel-gauge type and online state: near-static. */
+const BATTERY_INFO_MS = 30000
 
-  if (!data) {
+type Source = Pick<PollResult<unknown>, 'status' | 'error' | 'refresh' | 'refreshing'>
+
+/**
+ * The read state of one source: an error with Retry when nothing could be
+ * read, or a stale note over the last good reading when a later read failed.
+ * `live` is false for a repeat of a status already announced in another card.
+ */
+function SourceStatus({ what, source, live = true }: { what: string; source: Source; live?: boolean }) {
+  const action = { label: 'Retry', onClick: source.refresh, loading: source.refreshing }
+  if (source.status === 'error') {
     return (
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-        <Skeleton className="h-64" />
-        <Skeleton className="h-64" />
-        <Skeleton className="h-48" />
-        <Skeleton className="h-48" />
+      <InlineStatus kind="error" live={live} action={action}>
+        Could not read the {what}{source.error ? `: ${source.error}` : '.'}
+      </InlineStatus>
+    )
+  }
+  if (source.status === 'stale') {
+    return (
+      <InlineStatus kind="stale" live={live} action={action}>
+        Showing the last {what} reading; refresh failed{source.error ? `: ${source.error}` : '.'}
+      </InlineStatus>
+    )
+  }
+  return null
+}
+
+function CardLoading({ label, className }: { label: string; className: string }) {
+  return (
+    <Loading label={label}>
+      <Skeleton className={className} />
+    </Loading>
+  )
+}
+
+const THERMAL_LABELS = ['CPU (avg)', 'Modem (Q6 DSP)', 'Modem SS', 'PA (power amplifier)', 'SDR (radio)', 'Battery', 'USB', 'Ethernet PHY', 'PMIC', 'Board (XO)']
+
+function cpuAverage(thermal: ThermalAll): number | undefined {
+  const cores = [thermal.cpu_0, thermal.cpu_1, thermal.cpu_2, thermal.cpu_3].filter((v): v is number => v != null)
+  return cores.length > 0 ? cores.reduce((a, b) => a + b, 0) / cores.length : undefined
+}
+
+function ThermalCard() {
+  const thermal = usePoll('metrics:thermal', api.thermalAll, THERMAL_MS)
+  const t = thermal.data
+  return (
+    <Card title="Temperatures">
+      {!t ? (
+        thermal.status === 'error' ? (
+          <SourceStatus what="temperatures" source={thermal} />
+        ) : (
+          <CardLoading label="Loading temperatures" className="h-64" />
+        )
+      ) : (
+        <div className="space-y-2.5">
+          <SourceStatus what="temperatures" source={thermal} />
+          {t.available ? (
+            <>
+              <ThermalBar label="CPU (avg)" value={cpuAverage(t)} />
+              <ThermalBar label="Modem (Q6 DSP)" value={t.modem} />
+              <ThermalBar label="Modem SS" value={t.modem_ss0} />
+              <ThermalBar label="PA (power amplifier)" value={t.pa} />
+              <ThermalBar label="SDR (radio)" value={t.sdr} />
+              <ThermalBar label="Battery" value={t.battery} />
+              <ThermalBar label="USB" value={t.usb} />
+              <ThermalBar label="Ethernet PHY" value={t.eth_phy} />
+              <ThermalBar label="PMIC" value={t.pmic} />
+              <ThermalBar label="Board (XO)" value={t.xo_therm} />
+            </>
+          ) : (
+            <>
+              <p className="text-meta font-medium text-warn">Thermal sensors are unavailable.</p>
+              {THERMAL_LABELS.map((label) => <ThermalBar key={label} label={label} />)}
+            </>
+          )}
+        </div>
+      )}
+    </Card>
+  )
+}
+
+/** CPU and memory from the heartbeat; `null` sections mean the agent did not report them. */
+function HeartbeatCards() {
+  useFastHeartbeat()
+  const home = useHome()
+  const cpu = home.data?.cpu ?? null
+  const mem = home.data?.memory ?? null
+
+  if (!home.data) {
+    return (
+      <div className="space-y-3">
+        <Card title="CPU usage">
+          {home.status === 'error' ? <SourceStatus what="CPU usage" source={home} /> : <CardLoading label="Loading CPU usage" className="h-40" />}
+        </Card>
+        <Card title="Memory">
+          {home.status === 'error' ? <SourceStatus what="memory usage" source={home} live={false} /> : <CardLoading label="Loading memory usage" className="h-12" />}
+        </Card>
       </div>
     )
   }
 
-  const { thermal, battery, batteryInfo, cpu, mem } = data
-
-  const cpuAvg =
-    thermal?.available && thermal.cpu_0 != null
-      ? [thermal.cpu_0, thermal.cpu_1, thermal.cpu_2, thermal.cpu_3]
-          .filter((v): v is number => v != null)
-          .reduce((a, b) => a + b, 0) /
-        [thermal.cpu_0, thermal.cpu_1, thermal.cpu_2, thermal.cpu_3].filter((v) => v != null).length
-      : undefined
-
-  const batteryHealth =
-    battery?.available && battery.charge_full_design_mah != null && battery.charge_full_design_mah > 0 && battery.charge_full_mah != null
-      ? Math.round((battery.charge_full_mah / battery.charge_full_design_mah) * 100)
-      : undefined
-
   return (
-    <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-      <Card title="Temperatures">
-        {thermal?.available ? (
-          <div className="space-y-2.5">
-            <ThermalBar label="CPU (avg)" value={cpuAvg} />
-            <ThermalBar label="Modem (Q6 DSP)" value={thermal.modem} />
-            <ThermalBar label="Modem SS" value={thermal.modem_ss0} />
-            <ThermalBar label="PA (power amplifier)" value={thermal.pa} />
-            <ThermalBar label="SDR (radio)" value={thermal.sdr} />
-            <ThermalBar label="Battery" value={thermal.battery} />
-            <ThermalBar label="USB" value={thermal.usb} />
-            <ThermalBar label="Ethernet PHY" value={thermal.eth_phy} />
-            <ThermalBar label="PMIC" value={thermal.pmic} />
-            <ThermalBar label="Board (XO)" value={thermal.xo_therm} />
-          </div>
-        ) : (
-          <div className="space-y-2.5">
-            <p className="text-meta font-medium text-warn">Thermal sensors are unavailable.</p>
-            {['CPU (avg)', 'Modem (Q6 DSP)', 'Modem SS', 'PA (power amplifier)', 'SDR (radio)', 'Battery', 'USB', 'Ethernet PHY', 'PMIC', 'Board (XO)'].map((label) => <ThermalBar key={label} label={label} />)}
-          </div>
-        )}
-      </Card>
-
-      <div className="space-y-3">
-        <Card title="CPU usage">
+    <div className="space-y-3">
+      <Card title="CPU usage">
+        <div className="space-y-3">
+          <SourceStatus what="CPU usage" source={home} />
           {cpu ? (
-            <div className="space-y-3">
+            <>
               <div>
                 <div className="mb-1 flex justify-between text-body">
                   <span className="font-medium text-ink">Overall</span>
@@ -280,13 +314,16 @@ export default function MetricsTab() {
                   ))}
                 </div>
               )}
-            </div>
+            </>
           ) : (
-            <p className="text-body text-ink3">No CPU data</p>
+            <p className="text-body font-medium text-warn">The router did not report CPU usage.</p>
           )}
-        </Card>
+        </div>
+      </Card>
 
-        <Card title="Memory">
+      <Card title="Memory">
+        <div className="space-y-3">
+          <SourceStatus what="memory usage" source={home} live={false} />
           {mem ? (
             <div>
               <div className="mb-1 flex justify-between text-body">
@@ -298,14 +335,36 @@ export default function MetricsTab() {
               <Meter pct={mem.usage_pct} tone="bg-warn" />
             </div>
           ) : (
-            <p className="text-body text-ink3">No memory data</p>
+            <p className="text-body font-medium text-warn">The router did not report memory usage.</p>
           )}
-        </Card>
-      </div>
+        </div>
+      </Card>
+    </div>
+  )
+}
 
+function BatteryCard({ detail, info }: { detail: PollResult<BatteryDetail>; info: PollResult<BatteryBspInfo> }) {
+  const battery = detail.data
+  if (!battery) {
+    return (
       <Card title="Battery">
-        {battery?.available ? (
-          <div className="space-y-3">
+        {detail.status === 'error' ? <SourceStatus what="battery" source={detail} /> : <CardLoading label="Loading battery" className="h-48" />}
+      </Card>
+    )
+  }
+
+  const bsp = info.data?.available ? info.data : null
+  const bspValue = (value: boolean | null | undefined, yes: string, no: string) =>
+    bsp && value != null ? (value ? yes : no) : info.status === 'loading' ? 'Loading' : 'Unavailable'
+
+  return (
+    <Card title="Battery">
+      <div className="space-y-3">
+        <SourceStatus what="battery" source={detail} />
+        {battery.available ? (
+          <>
+            {/* Fuel gauge and online state come from a separate source. */}
+            <SourceStatus what="fuel gauge" source={info} />
             <div>
               <div className="mb-1 flex justify-between text-body">
                 <span className="tnum font-mono font-semibold text-ink">{battery.capacity != null ? `${battery.capacity}%` : 'Unavailable'}</span>
@@ -325,34 +384,76 @@ export default function MetricsTab() {
               />
               <Info label="Charge counter" value={formatMeasure(battery.charge_counter_mah, (value) => `${value.toLocaleString()} mAh`)} />
               <Info label="Cycles" value={formatMeasure(battery.cycle_count, String)} />
-              <Info label="Fuel gauge" value={batteryInfo?.available && batteryInfo.using_hw_fg_chip != null ? (batteryInfo.using_hw_fg_chip ? 'Hardware' : 'Software') : 'Unavailable'} />
-              <Info label="Battery online" value={batteryInfo?.available && batteryInfo.online != null ? (batteryInfo.online ? 'Yes' : 'No') : 'Unavailable'} />
+              <Info label="Fuel gauge" value={bspValue(bsp?.using_hw_fg_chip, 'Hardware', 'Software')} />
+              <Info label="Battery online" value={bspValue(bsp?.online, 'Yes', 'No')} />
             </div>
-          </div>
+          </>
         ) : (
           <p className="text-body font-medium text-warn">Battery hardware data are unavailable.</p>
         )}
+      </div>
+    </Card>
+  )
+}
+
+function BatteryHealthCard({ detail }: { detail: PollResult<BatteryDetail> }) {
+  const battery = detail.data
+  if (!battery) {
+    return (
+      <Card title="Battery health">
+        {detail.status === 'error' ? (
+          // The Battery card already announced this failure.
+          <SourceStatus what="battery health" source={detail} live={false} />
+        ) : (
+          <CardLoading label="Loading battery health" className="h-28" />
+        )}
       </Card>
+    )
+  }
 
+  const retention =
+    battery.available && battery.charge_full_design_mah != null && battery.charge_full_design_mah > 0 && battery.charge_full_mah != null
+      ? Math.round((battery.charge_full_mah / battery.charge_full_design_mah) * 100)
+      : undefined
+
+  return (
+    <Card title="Battery health">
       <div className="space-y-3">
-        <Card title="Battery health">
-          {battery?.available ? (
-            <div className="space-y-1.5 text-body">
-              <KV k="Health" v={battery.health ?? 'Unavailable'} />
-              <KV k="Capacity" v={battery.charge_full_mah != null && battery.charge_full_design_mah != null ? `${battery.charge_full_mah.toLocaleString()} / ${battery.charge_full_design_mah.toLocaleString()} mAh` : 'Unavailable'} />
-              {batteryHealth != null && (
-                <div className="flex justify-between">
-                  <span className="text-ink2">Capacity retention</span>
-                  <span className={`tnum font-mono font-semibold ${batteryHealth > 80 ? 'text-ok' : 'text-warn'}`}>{batteryHealth}%</span>
-                </div>
-              )}
-              <KV k="OCV" v={formatMeasure(battery.voltage_ocv_mv, (value) => `${(value / 1000).toFixed(3)} V`)} />
-            </div>
-          ) : (
+        <SourceStatus what="battery health" source={detail} live={false} />
+        {battery.available ? (
+          <div className="space-y-1.5 text-body">
+            <KV k="Health" v={battery.health ?? 'Unavailable'} />
+            <KV k="Capacity" v={battery.charge_full_mah != null && battery.charge_full_design_mah != null ? `${battery.charge_full_mah.toLocaleString()} / ${battery.charge_full_design_mah.toLocaleString()} mAh` : 'Unavailable'} />
+            {retention != null && (
+              <div className="flex justify-between">
+                <span className="text-ink2">Capacity retention</span>
+                <span className={`tnum font-mono font-semibold ${retention > 80 ? 'text-ok' : 'text-warn'}`}>{retention}%</span>
+              </div>
+            )}
+            <KV k="OCV" v={formatMeasure(battery.voltage_ocv_mv, (value) => `${(value / 1000).toFixed(3)} V`)} />
+          </div>
+        ) : (
           <p className="text-body font-medium text-warn">Battery health measures are unavailable.</p>
-          )}
-        </Card>
+        )}
+      </div>
+    </Card>
+  )
+}
 
+// ── Tab ───────────────────────────────────────────────────────────────────────
+
+export default function MetricsTab() {
+  // Battery detail feeds two cards, so the tab owns it (and the fuel-gauge read beside it).
+  const detail = usePoll('metrics:battery-detail', api.batteryDetail, BATTERY_DETAIL_MS)
+  const info = usePoll('metrics:battery-info', api.batteryInfoUbus, BATTERY_INFO_MS)
+
+  return (
+    <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+      <ThermalCard />
+      <HeartbeatCards />
+      <BatteryCard detail={detail} info={info} />
+      <div className="space-y-3">
+        <BatteryHealthCard detail={detail} />
         <ChargeControlCard />
       </div>
     </div>
