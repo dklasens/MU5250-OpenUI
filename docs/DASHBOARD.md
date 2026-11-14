@@ -111,6 +111,13 @@ Both return `{ data, error, status, refreshing, refresh, mutate }`.
     lists 24 lockable LTE bands (`LTE_BANDS` in `agent/src/cell.rs`; B66 and
     B71 are the extras). On the device's default LTE state the dashboard
     therefore shows 22 bands selected, not "All bands".
+- **Cell locks.** `lock_nr_cell` (`pci,nr-arfcn,band`) and `lock_lte_cell`
+  (`pci,earfcn`) from the netinfo payload are each `unknown` (missing or
+  malformed), `none` (empty, or all zeros as left by a cell-lock reset) or
+  `locked`. Each cell-lock card shows the current lock and compares it with
+  that RAT's serving primary cell (PCI, ARFCN and, for NR, band). A lock to a
+  cell the modem is not on shows a warning with "Reset cell locks" beside it.
+  The state shown is always the device's last read, never the request just sent.
 - **Wi-Fi.** TX power is the real percentage (1-100). Channel widths are
   compared as MHz, so `VHT80` and `80 MHz` agree, and an unknown width never
   raises a mismatch. Channel advice is limited to configuration facts; no
@@ -143,7 +150,8 @@ Both return `{ data, error, status, refreshing, refresh, mutate }`.
   then reads back and reports verified, mismatch or unverified. Verification is
   bounded, and the dashboard never retries a mutation automatically. A reply
   that never arrives offers a read-only check, not a resend.
-- Cell-lock behaviour is unchanged apart from the confirmation and layout.
+- Cell-lock requests are unchanged apart from the confirmation and layout;
+  the observed lock is read back from the heartbeat (see "Cell locks" above).
 
 ## Accessibility
 

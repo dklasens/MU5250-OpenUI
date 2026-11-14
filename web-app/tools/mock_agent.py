@@ -1094,8 +1094,10 @@ def post_lock_lte(body):
 
 
 def post_lock_reset(body):
-    STATE["netinfo"]["lock_lte_cell"] = ""
-    STATE["netinfo"]["lock_nr_cell"] = ""
+    # nwinfo_reset_band_cell_setting leaves zeros, not empty strings (verified on
+    # HK B04). The pristine fixture keeps "", so both unlocked spellings are exercised.
+    STATE["netinfo"]["lock_lte_cell"] = "0,0"
+    STATE["netinfo"]["lock_nr_cell"] = "0,0,0"
     return ok_result()
 
 
