@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::net::Ipv4Addr;
 
 use serde::Deserialize;
@@ -68,30 +69,45 @@ pub fn router_dns_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
     }
 }
 
-pub fn router_lan_get(state: &AppState) -> (u16, Value) {
-    let read = |key: &str| ubus::uci_get(key).map_err(|e| format!("cannot read {key}: {e}"));
-    let result = (|| {
-        let ipaddr = read("zwrt_router.network.lan_ipaddr")?;
-        let netmask = read("zwrt_router.dhcp.lan_netmask")?;
-        let ignore = read("zwrt_router.dhcp.ignore")?;
-        let dhcp_start = read("zwrt_router.dhcp.zte_start")?;
-        let dhcp_end = read("zwrt_router.dhcp.zte_end")?;
-        let lease_seconds = read("zwrt_router.dhcp.leasetime")?
+/// The LAN settings from one `uci show zwrt_router` dump. Every key must be
+/// present: a missing one is an error, exactly as the per-key `uci get` was.
+fn lan_settings_from_uci(uci: &HashMap<String, String>) -> Result<LanSettings, String> {
+    let read = |key: &str| {
+        uci.get(key)
+            .cloned()
+            .ok_or_else(|| format!("cannot read zwrt_router.{key}"))
+    };
+    Ok(LanSettings {
+        ipaddr: read("network.lan_ipaddr")?,
+        netmask: read("dhcp.lan_netmask")?,
+        dhcp_enabled: read("dhcp.ignore")? != "1",
+        dhcp_start: read("dhcp.zte_start")?,
+        dhcp_end: read("dhcp.zte_end")?,
+        lease_seconds: read("dhcp.leasetime")?
             .parse::<u32>()
-            .map_err(|_| "invalid zwrt_router DHCP lease time".to_string())?;
-        Ok::<Value, String>(json!({
-            "transition": state.lan.status(),
-            "ipaddr": ipaddr,
-            "netmask": netmask,
-            "dhcp_enabled": ignore != "1",
-            "dhcp_start": dhcp_start,
-            "dhcp_end": dhcp_end,
-            "lease_seconds": lease_seconds,
-        }))
-    })();
+            .map_err(|_| "invalid zwrt_router DHCP lease time".to_string())?,
+    })
+}
+
+/// Uncached on purpose: the dashboard reads this back after a LAN change.
+pub fn router_lan_get(state: &AppState) -> (u16, Value) {
+    let result = ubus::try_uci_show("zwrt_router")
+        .map_err(|e| format!("cannot read zwrt_router: {e}"))
+        .and_then(|uci| lan_settings_from_uci(&uci));
 
     match result {
-        Ok(data) => (200, json!({"ok": true, "data": data})),
+        Ok(lan) => (
+            200,
+            json!({"ok": true, "data": {
+                "transition": state.lan.status(),
+                "ipaddr": lan.ipaddr,
+                "netmask": lan.netmask,
+                "dhcp_enabled": lan.dhcp_enabled,
+                "dhcp_start": lan.dhcp_start,
+                "dhcp_end": lan.dhcp_end,
+                "lease_seconds": lan.lease_seconds,
+            }}),
+        ),
         Err(error) => (503, json!({"ok": false, "error": error})),
     }
 }
@@ -443,6 +459,44 @@ mod tests {
             dhcp_end: "192.168.0.253".into(),
             lease_seconds: 86_400,
         }
+    }
+
+    fn lan_uci() -> HashMap<String, String> {
+        [
+            ("network", "zte_router"),
+            ("network.lan_ipaddr", "192.168.0.1"),
+            ("dhcp", "zte_router"),
+            ("dhcp.lan_netmask", "255.255.255.0"),
+            ("dhcp.ignore", "0"),
+            ("dhcp.zte_start", "192.168.0.2"),
+            ("dhcp.zte_end", "192.168.0.253"),
+            ("dhcp.leasetime", "86400"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+    }
+
+    #[test]
+    fn lan_settings_come_from_one_uci_dump() {
+        assert_eq!(lan_settings_from_uci(&lan_uci()).unwrap(), valid_lan());
+        let mut disabled = lan_uci();
+        disabled.insert("dhcp.ignore".into(), "1".into());
+        assert!(!lan_settings_from_uci(&disabled).unwrap().dhcp_enabled);
+    }
+
+    #[test]
+    fn lan_read_fails_instead_of_reporting_empty_values() {
+        // A failed `uci show` used to look like an empty config.
+        assert!(lan_settings_from_uci(&HashMap::new()).is_err());
+        let mut missing = lan_uci();
+        missing.remove("dhcp.zte_end");
+        assert!(lan_settings_from_uci(&missing)
+            .unwrap_err()
+            .contains("zte_end"));
+        let mut bad_lease = lan_uci();
+        bad_lease.insert("dhcp.leasetime".into(), "12h".into());
+        assert!(lan_settings_from_uci(&bad_lease).is_err());
     }
 
     #[test]

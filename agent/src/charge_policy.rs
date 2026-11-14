@@ -164,7 +164,9 @@ impl ChargeLimitEnforcer {
         std::thread::spawn(move || {
             let mut unplugged = false;
             loop {
-                enforcer.reconcile(unplugged);
+                // A panic in one pass must not end enforcement: the next timed
+                // pass runs as usual.
+                crate::diag_log::contain("charge_policy", || enforcer.reconcile(unplugged));
                 let interval = {
                     let state = enforcer.inner.safe_lock();
                     if state.policy.enabled && !state.manual_override {

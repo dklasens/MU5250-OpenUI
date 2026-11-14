@@ -39,6 +39,10 @@ const STARTUP_SCRIPT: &str = "/data/local/tmp/start_zte_agent.sh";
 
 fn main() {
     diag_log::init();
+    // Panics are contained (per request in `server.rs`, per loop in the
+    // background threads) rather than aborting; the hook makes each one
+    // visible in the diagnostics log. Keep `panic = "unwind"`.
+    diag_log::install_panic_hook();
     eprintln!(
         "[agent] zte-agent {} starting (pid {})",
         env!("CARGO_PKG_VERSION"),

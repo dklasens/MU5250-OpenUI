@@ -1,7 +1,8 @@
 use crate::process::BoundedCommand;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, Condvar, Mutex, Weak};
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use tiny_http::{Header, Method, Request, Response, Server};
@@ -26,6 +27,28 @@ const WORKER_POLL: Duration = Duration::from_millis(500);
 const RETRY_MIN: Duration = Duration::from_secs(1);
 const RETRY_MAX: Duration = Duration::from_secs(30);
 
+/// Largest request body accepted.
+const MAX_BODY: usize = 1024 * 1024;
+const TOO_LARGE: &str = "request body exceeds 1 MiB";
+/// Total time a client gets to deliver a request body, however it trickles.
+const BODY_DEADLINE: Duration = Duration::from_secs(10);
+/// Body threads at once (each reads one body, then serves that request).
+const MAX_BODY_READS: usize = 8;
+/// tiny_http reads a body of at most this many bytes (without `Expect`)
+/// before it hands the request over, so reading it cannot block a worker.
+const TINY_HTTP_PREBUFFERED: usize = 1024;
+
+/// Limits on reading request bodies. See `take_body`.
+#[derive(Clone)]
+struct BodyReads {
+    in_flight: Arc<AtomicUsize>,
+    limit: usize,
+    deadline: Duration,
+    /// Port of the listener, to tell its accepted sockets apart.
+    listen_port: Option<u16>,
+    watchdog: Watchdog,
+}
+
 pub fn start(threads: usize, state: Arc<AppState>) {
     // Seed the CPU tracker with a baseline
     state.cpu.seed();
@@ -37,6 +60,10 @@ pub fn start(threads: usize, state: Arc<AppState>) {
     // nothing to restart it. Supervise instead: a worker that sees the failure
     // flags it, all workers drain, and we rebuild the listener.
     let mut retry = RETRY_MIN;
+    // Shared across listener rebuilds: an abandoned body read outlives its
+    // listener and still counts against the cap.
+    let in_flight = Arc::new(AtomicUsize::new(0));
+    let watchdog = Watchdog::new();
     loop {
         let bind = state.binding.address();
         let generation = state.binding.generation.load(Ordering::Acquire);
@@ -58,12 +85,21 @@ pub fn start(threads: usize, state: Arc<AppState>) {
 
         let dead = Arc::new(AtomicBool::new(false));
         let mut handles = Vec::new();
+        let reads = BodyReads {
+            in_flight: Arc::clone(&in_flight),
+            limit: MAX_BODY_READS,
+            deadline: BODY_DEADLINE,
+            listen_port: server.server_addr().to_ip().map(|a| a.port()),
+            watchdog: watchdog.clone(),
+        };
 
         for _ in 0..threads {
             let server = Arc::clone(&server);
             let state = Arc::clone(&state);
             let dead = Arc::clone(&dead);
-            handles.push(std::thread::spawn(move || loop {
+            let reads = reads.clone();
+            let worker = std::thread::Builder::new().name("http-worker".into());
+            let spawned = worker.spawn(move || loop {
                 if state.binding.generation.load(Ordering::Acquire) != generation {
                     dead.store(true, Ordering::Relaxed);
                 }
@@ -71,7 +107,14 @@ pub fn start(threads: usize, state: Arc<AppState>) {
                     return;
                 }
                 match server.recv_timeout(WORKER_POLL) {
-                    Ok(Some(request)) => handle_request(request, &state),
+                    // A panic outside `route` (which has its own guard) drops
+                    // the request, and tiny_http answers it with a bare 500.
+                    // Either way the worker keeps serving.
+                    Ok(Some(request)) => {
+                        let _ = crate::diag_log::contain("server", || {
+                            handle_request(request, &state, &reads)
+                        });
+                    }
                     // Idle timeout — loop round and re-check `dead`.
                     Ok(None) => {}
                     Err(e) => {
@@ -80,7 +123,13 @@ pub fn start(threads: usize, state: Arc<AppState>) {
                         return;
                     }
                 }
-            }));
+            });
+            match spawned {
+                Ok(handle) => handles.push(handle),
+                // With no workers at all the join below returns at once and
+                // the listener is rebuilt after the retry delay.
+                Err(e) => eprintln!("[server] cannot start worker: {e}"),
+            }
         }
 
         for h in handles {
@@ -157,7 +206,19 @@ fn is_lan_origin(origin: &str) -> bool {
         || (octets[0] == 192 && octets[1] == 168)
 }
 
-fn handle_request(mut request: Request, state: &AppState) {
+fn handle_request(request: Request, state: &Arc<AppState>, reads: &BodyReads) {
+    // The body comes first, so that every later response (including 401s)
+    // goes out with it consumed: tiny_http drains an unread body when it drops
+    // a request. A body still on the socket is read, and the request served,
+    // on a body thread; the worker goes straight back to `recv`.
+    let state = Arc::clone(state);
+    take_body(request, reads, move |request, body| {
+        serve(request, &body, &state)
+    });
+}
+
+/// Everything after the body: CORS, auth, downloads, routing.
+fn serve(request: Request, body: &[u8], state: &AppState) {
     let method = request.method().clone();
     let url = request.url().to_string();
     let path = url.split('?').next().unwrap_or(&url).to_string();
@@ -294,31 +355,387 @@ fn handle_request(mut request: Request, state: &AppState) {
         }
     }
 
-    let mut body = Vec::new();
-    let mut reader = request.as_reader();
-    let mut limited = std::io::Read::take(&mut reader, 1024 * 1024 + 1);
-    if let Err(e) = std::io::Read::read_to_end(&mut limited, &mut body) {
-        respond(
-            request,
-            400,
-            json!({"ok": false, "error": format!("failed to read body: {e}")}),
-            origin_ref,
-        );
-        return;
-    }
-
-    if body.len() > 1024 * 1024 {
-        respond(
-            request,
-            413,
-            json!({"ok": false, "error": "request body exceeds 1 MiB"}),
-            origin_ref,
-        );
-        return;
-    }
-
-    let (status, body_json) = route(&method, &path, state, &body, &client_ip, user_agent_ref);
+    let (status, body_json) =
+        contain_route(|| route(&method, &path, state, body, &client_ip, user_agent_ref));
     respond(request, status, body_json, origin_ref);
+}
+
+/// Run a handler, turning a panic into a 500 envelope. Shared state stays
+/// usable: every lock goes through `safe_lock()`, which ignores poisoning.
+fn contain_route(route: impl FnOnce() -> (u16, Value)) -> (u16, Value) {
+    crate::diag_log::contain("server", route)
+        .unwrap_or_else(|| (500, json!({"ok": false, "error": "internal error"})))
+}
+
+#[derive(Debug, PartialEq)]
+enum BodyKind {
+    /// Nothing to read (or nothing we will read).
+    Empty,
+    /// Already in memory: tiny_http read it before handing the request over.
+    Buffered,
+    /// Still on the socket, at the client's pace.
+    Streamed,
+    /// Declared over `MAX_BODY`.
+    TooLarge,
+}
+
+/// Mirrors how tiny_http 0.12 (`request::new_request`) picks the body reader:
+/// it uses the first matching header, and ignores `Content-Length` when
+/// `Transfer-Encoding` is present (`body_length` is then `None`).
+fn body_kind(headers: &[Header], body_length: Option<usize>) -> BodyKind {
+    let first = |name: &'static str| {
+        headers
+            .iter()
+            .find(|h| h.field.equiv(name))
+            .map(|h| h.value.as_str())
+    };
+    // An upgrade request's "body" is the raw socket: reading it would block
+    // until the client closes. Nothing here accepts an upgrade.
+    if first("Connection").is_some_and(|v| v.to_ascii_lowercase().contains("upgrade")) {
+        return BodyKind::Empty;
+    }
+    match body_length {
+        Some(0) => BodyKind::Empty,
+        Some(n) if n > MAX_BODY => BodyKind::TooLarge,
+        Some(n) if n <= TINY_HTTP_PREBUFFERED && first("Expect").is_none() => BodyKind::Buffered,
+        Some(_) => BodyKind::Streamed,
+        None if first("Transfer-Encoding").is_some() => BodyKind::Streamed,
+        None => BodyKind::Empty,
+    }
+}
+
+fn read_capped(reader: &mut dyn std::io::Read) -> std::io::Result<Vec<u8>> {
+    let mut body = Vec::new();
+    std::io::Read::read_to_end(
+        &mut std::io::Read::take(reader, MAX_BODY as u64 + 1),
+        &mut body,
+    )?;
+    Ok(body)
+}
+
+/// Take the request body without letting the client hold a worker, then call
+/// `serve`.
+///
+/// tiny_http sets no socket timeouts, so a client that stops sending mid-body
+/// (a phone leaving Wi-Fi) would block a plain read forever. Bodies already in
+/// memory are read in place and served on the calling worker. A body still on
+/// the socket is handed, with `serve`, to a body thread, and the worker
+/// returns at once. At most `limit` body threads run (503 beyond). Each is
+/// bounded by `deadline` in total, enforced by the `Watchdog`: when it passes,
+/// the socket's read side is shut down, the read ends, and the client gets a
+/// 408, whether the client stalled or is trickling bytes.
+fn take_body<F>(mut request: Request, reads: &BodyReads, serve: F)
+where
+    F: FnOnce(Request, Vec<u8>) + Send + 'static,
+{
+    match body_kind(request.headers(), request.body_length()) {
+        BodyKind::Empty => serve(request, Vec::new()),
+        BodyKind::Buffered => match read_capped(request.as_reader()) {
+            Ok(body) => serve(request, body),
+            Err(e) => reject(request, reads, 400, format!("failed to read body: {e}")),
+        },
+        BodyKind::TooLarge => reject(request, reads, 413, TOO_LARGE),
+        BodyKind::Streamed => spawn_body_thread(request, reads, serve),
+    }
+}
+
+fn spawn_body_thread<F>(request: Request, reads: &BodyReads, serve: F)
+where
+    F: FnOnce(Request, Vec<u8>) + Send + 'static,
+{
+    let Some(permit) = Permit::acquire(&reads.in_flight, reads.limit) else {
+        reject(
+            request,
+            reads,
+            503,
+            "too many uploads in progress; retry shortly",
+        );
+        return;
+    };
+    // The request goes over a channel rather than into the closure, so that
+    // it is still ours to answer if the thread cannot be spawned.
+    let (job_tx, job_rx) = mpsc::channel::<Request>();
+    let thread_reads = reads.clone();
+    let spawned = std::thread::Builder::new()
+        .name("http-body".into())
+        .spawn(move || {
+            // Held until this thread is done with the request.
+            let _permit = permit;
+            let Ok(request) = job_rx.recv() else {
+                return;
+            };
+            // Contained like a worker: a panic is logged, and the dropped
+            // request is answered with a bare 500 by tiny_http.
+            let _ = crate::diag_log::contain("server", || {
+                if let Some((request, body)) = read_streamed(request, &thread_reads) {
+                    serve(request, body);
+                }
+            });
+        });
+    if spawned.is_err() {
+        reject(request, reads, 503, "cannot read request body right now");
+        return;
+    }
+    if let Err(mpsc::SendError(request)) = job_tx.send(request) {
+        reject(request, reads, 503, "cannot read request body right now");
+    }
+}
+
+/// Read a body still on the socket, under the total deadline. Returns `None`
+/// when the request has already been answered.
+fn read_streamed(mut request: Request, reads: &BodyReads) -> Option<(Request, Vec<u8>)> {
+    let watch = request.remote_addr().copied().map(|peer| {
+        reads
+            .watchdog
+            .watch(peer, reads.listen_port, reads.deadline)
+    });
+    let started = Instant::now();
+    let body = read_capped(request.as_reader());
+    let expired = started.elapsed() >= reads.deadline || watch.as_ref().is_some_and(Watch::fired);
+    // Deregister while we still hold the request: the watchdog only touches a
+    // socket whose request (and so whose descriptors) is still alive.
+    drop(watch);
+    match body {
+        _ if expired => reject(request, reads, 408, BODY_TIMEOUT),
+        Ok(body) if body.len() <= MAX_BODY => return Some((request, body)),
+        Ok(_) => reject(request, reads, 413, TOO_LARGE),
+        Err(e) => reject(request, reads, 400, format!("failed to read body: {e}")),
+    }
+    None
+}
+
+/// One thread that cuts off body reads past their deadline, by shutting down
+/// the read side of their socket (see `shutdown_read`).
+#[derive(Clone)]
+struct Watchdog {
+    shared: Arc<Watched>,
+}
+
+#[derive(Default)]
+struct Watched {
+    entries: Mutex<Vec<WatchEntry>>,
+    changed: Condvar,
+    next_id: AtomicU64,
+}
+
+struct WatchEntry {
+    id: u64,
+    due: Instant,
+    peer: SocketAddr,
+    listen_port: Option<u16>,
+    fired: Arc<AtomicBool>,
+}
+
+/// A registered body read. Dropping it deregisters.
+struct Watch {
+    shared: Arc<Watched>,
+    id: u64,
+    fired: Arc<AtomicBool>,
+}
+
+impl Watch {
+    fn fired(&self) -> bool {
+        self.fired.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        let mut entries = self
+            .shared
+            .entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        entries.retain(|entry| entry.id != self.id);
+    }
+}
+
+impl Watchdog {
+    fn new() -> Self {
+        let shared = Arc::new(Watched::default());
+        let weak = Arc::downgrade(&shared);
+        let spawned = std::thread::Builder::new()
+            .name("http-body-watchdog".into())
+            .spawn(move || {
+                // Exits once every Watchdog handle is gone (tests); in the
+                // agent it lives as long as the process.
+                while let Some(true) =
+                    crate::diag_log::contain("http-body-watchdog", || Self::tick(&weak))
+                {
+                }
+            });
+        if let Err(e) = spawned {
+            eprintln!("[server] cannot start body watchdog: {e}; uploads are bounded only by the in-flight cap");
+        }
+        Self { shared }
+    }
+
+    fn watch(&self, peer: SocketAddr, listen_port: Option<u16>, deadline: Duration) -> Watch {
+        let id = self.shared.next_id.fetch_add(1, Ordering::Relaxed);
+        let fired = Arc::new(AtomicBool::new(false));
+        let mut entries = self
+            .shared
+            .entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        entries.push(WatchEntry {
+            id,
+            due: Instant::now() + deadline,
+            peer,
+            listen_port,
+            fired: Arc::clone(&fired),
+        });
+        self.shared.changed.notify_all();
+        Watch {
+            shared: Arc::clone(&self.shared),
+            id,
+            fired,
+        }
+    }
+
+    /// Cut off overdue reads, then sleep until the next deadline (at most 1 s,
+    /// to notice shutdown). Returns false when the watchdog is no longer used.
+    fn tick(weak: &Weak<Watched>) -> bool {
+        let Some(shared) = weak.upgrade() else {
+            return false;
+        };
+        let mut entries = shared.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        // Under the lock: the owning body thread cannot deregister, and so
+        // cannot have dropped its request, while its socket is shut down.
+        entries.retain(|entry| {
+            if entry.due > now {
+                return true;
+            }
+            entry.fired.store(true, Ordering::Release);
+            shutdown_read(entry.peer, entry.listen_port);
+            false
+        });
+        let next = entries
+            .iter()
+            .map(|entry| entry.due.saturating_duration_since(now))
+            .min()
+            .unwrap_or(Duration::from_secs(1))
+            .min(Duration::from_secs(1));
+        drop(
+            shared
+                .changed
+                .wait_timeout(entries, next)
+                .unwrap_or_else(|e| e.into_inner()),
+        );
+        true
+    }
+}
+
+const BODY_TIMEOUT: &str = "request body not received in time";
+
+/// Answer a request whose body may be partly unread.
+fn reject(request: Request, reads: &BodyReads, status: u16, error: impl Into<String>) {
+    // When tiny_http drops a request it reads and discards the rest of the
+    // body, which blocks for as long as the client stalls. With the read side
+    // shut down that drain ends at once; the response is still written. It
+    // also ends the connection, which is what a misbehaving upload deserves.
+    if let Some(peer) = request.remote_addr().copied() {
+        shutdown_read(peer, reads.listen_port);
+    }
+    let origin = request
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv("Origin"))
+        .map(|h| h.value.as_str().to_string());
+    respond(
+        request,
+        status,
+        json!({"ok": false, "error": error.into()}),
+        origin.as_deref(),
+    );
+}
+
+/// One slot of `BodyReads::limit`, released on drop.
+struct Permit(Arc<AtomicUsize>);
+
+impl Permit {
+    fn acquire(in_flight: &Arc<AtomicUsize>, limit: usize) -> Option<Self> {
+        in_flight
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < limit).then_some(n + 1)
+            })
+            .ok()
+            .map(|_| Self(Arc::clone(in_flight)))
+    }
+}
+
+impl Drop for Permit {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Shut down the read side of this process's socket(s) connected to `peer`
+/// (and, if known, accepted on `listen_port`). Returns whether one was found.
+///
+/// tiny_http exposes neither its sockets nor timeouts, so the socket is found
+/// by its addresses among our descriptors. A blocked read on it then returns
+/// EOF. The caller still holds the request, so the descriptor cannot have
+/// been closed and reused in the meantime.
+fn shutdown_read(peer: SocketAddr, listen_port: Option<u16>) -> bool {
+    let Ok(dir) = std::fs::read_dir("/proc/self/fd").or_else(|_| std::fs::read_dir("/dev/fd"))
+    else {
+        return false;
+    };
+    let fds: Vec<libc::c_int> = dir
+        .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok())
+        .collect();
+    let mut found = false;
+    for fd in fds {
+        let Some(remote) = socket_addr(fd, true) else {
+            continue;
+        };
+        if remote.ip() != peer.ip() || remote.port() != peer.port() {
+            continue;
+        }
+        if listen_port.is_some() && socket_addr(fd, false).map(|a| a.port()) != listen_port {
+            continue;
+        }
+        if unsafe { libc::shutdown(fd, libc::SHUT_RD) } == 0 {
+            found = true;
+        }
+    }
+    found
+}
+
+/// `getpeername` (`peer`) or `getsockname` of an IP socket.
+fn socket_addr(fd: libc::c_int, peer: bool) -> Option<SocketAddr> {
+    // SAFETY: plain syscalls on a caller-supplied descriptor (EBADF/ENOTSOCK
+    // are just errors) writing into a zeroed, correctly sized sockaddr_storage.
+    let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+    let address = std::ptr::addr_of_mut!(storage).cast::<libc::sockaddr>();
+    let rc = unsafe {
+        if peer {
+            libc::getpeername(fd, address, &mut len)
+        } else {
+            libc::getsockname(fd, address, &mut len)
+        }
+    };
+    if rc != 0 {
+        return None;
+    }
+    match libc::c_int::from(storage.ss_family) {
+        libc::AF_INET => {
+            // SAFETY: ss_family says the storage holds a sockaddr_in.
+            let v4 = unsafe { &*std::ptr::addr_of!(storage).cast::<libc::sockaddr_in>() };
+            let ip = Ipv4Addr::from(u32::from_be(v4.sin_addr.s_addr));
+            Some(SocketAddr::new(IpAddr::V4(ip), u16::from_be(v4.sin_port)))
+        }
+        libc::AF_INET6 => {
+            // SAFETY: ss_family says the storage holds a sockaddr_in6.
+            let v6 = unsafe { &*std::ptr::addr_of!(storage).cast::<libc::sockaddr_in6>() };
+            let ip = Ipv6Addr::from(v6.sin6_addr.s6_addr);
+            Some(SocketAddr::new(IpAddr::V6(ip), u16::from_be(v6.sin6_port)))
+        }
+        _ => None,
+    }
 }
 
 pub fn route(
@@ -524,7 +941,19 @@ fn at_port(state: &AppState) -> (u16, Value) {
 
 // --- TTL handlers ---
 
+/// The mangle rules only change through `ttl_set`/`ttl_clear` (which invalidate
+/// this) or a boot-time `start_ttl.sh`, so a short cache spares two forks per
+/// read without ever showing a stale clamp after a change made here.
+const TTL_STATUS_TTL: std::time::Duration = std::time::Duration::from_secs(10);
+static TTL_STATUS: std::sync::LazyLock<crate::cache::Cached<Value>> =
+    std::sync::LazyLock::new(crate::cache::Cached::default);
+
 fn ttl_status() -> (u16, Value) {
+    let data = TTL_STATUS.get_or_refresh(TTL_STATUS_TTL, read_ttl_status);
+    (200, json!({"ok": true, "data": data}))
+}
+
+fn read_ttl_status() -> Value {
     let ipv4 = std::process::Command::new("iptables")
         .args(["-t", "mangle", "-L", "PREROUTING", "-n"])
         .bounded_output();
@@ -560,14 +989,11 @@ fn ttl_status() -> (u16, Value) {
             }
         }
     }
-    (
-        200,
-        json!({"ok": true, "data": {
-            "active": active,
-            "ipv6_active": hl_active,
-            "ttl_value": ttl_value,
-        }}),
-    )
+    json!({
+        "active": active,
+        "ipv6_active": hl_active,
+        "ttl_value": ttl_value,
+    })
 }
 
 fn ttl_set(body: &[u8]) -> (u16, Value) {
@@ -617,6 +1043,8 @@ fn ttl_set(body: &[u8]) -> (u16, Value) {
         .bounded_output();
     let ok4 = r4.map(|o| o.status.success()).unwrap_or(false);
     let ok6 = r6.map(|o| o.status.success()).unwrap_or(false);
+    // The rules changed (or were at least cleared) whatever the outcome.
+    TTL_STATUS.invalidate();
     // Persist to start_ttl.sh
     let script = format!(
         "#!/bin/sh\niptables  -t mangle -C PREROUTING -i br-lan -j TTL --ttl-set {ttl} 2>/dev/null ||   iptables  -t mangle -A PREROUTING -i br-lan -j TTL --ttl-set {ttl}\nip6tables -t mangle -C PREROUTING -i br-lan -j HL  --hl-set  {ttl} 2>/dev/null ||   ip6tables -t mangle -A PREROUTING -i br-lan -j HL  --hl-set  {ttl}\n"
@@ -642,6 +1070,7 @@ fn ttl_clear() -> (u16, Value) {
     let _ = std::process::Command::new("sh").args(["-c",
         "ip6tables -t mangle -S PREROUTING 2>/dev/null | grep 'HL --hl-set' | while read -r rule; do ip6tables -t mangle $(echo \"$rule\" | sed 's/-A/-D/'); done"
     ]).bounded_output();
+    TTL_STATUS.invalidate();
     // Remove persistence script content (keep file but make it a no-op)
     let _ = std::fs::write(
         "/data/local/tmp/start_ttl.sh",
@@ -660,6 +1089,245 @@ fn respond(request: Request, status: u16, body: Value, origin: Option<&str>) {
         response = response.with_header(h);
     }
     let _ = request.respond(response);
+}
+
+#[cfg(test)]
+mod body_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    use std::time::Instant;
+
+    fn headers(list: &[(&str, &str)]) -> Vec<Header> {
+        list.iter()
+            .map(|(k, v)| Header::from_bytes(*k, *v).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn body_kind_mirrors_tiny_http_reader_choice() {
+        use BodyKind::*;
+        assert_eq!(body_kind(&[], None), Empty);
+        assert_eq!(body_kind(&[], Some(0)), Empty);
+        assert_eq!(body_kind(&[], Some(1024)), Buffered);
+        assert_eq!(body_kind(&[], Some(1025)), Streamed);
+        assert_eq!(body_kind(&[], Some(MAX_BODY)), Streamed);
+        assert_eq!(body_kind(&[], Some(MAX_BODY + 1)), TooLarge);
+        let expect = headers(&[("Expect", "100-continue")]);
+        assert_eq!(body_kind(&expect, Some(10)), Streamed);
+        let chunked = headers(&[("Transfer-Encoding", "chunked")]);
+        assert_eq!(body_kind(&chunked, None), Streamed);
+        let upgrade = headers(&[("Connection", "Upgrade"), ("Transfer-Encoding", "chunked")]);
+        assert_eq!(body_kind(&upgrade, None), Empty);
+        // tiny_http only looks at the first Connection header.
+        let second = headers(&[("Connection", "keep-alive"), ("Connection", "upgrade")]);
+        assert_eq!(body_kind(&second, Some(5000)), Streamed);
+    }
+
+    #[test]
+    fn permits_are_capped_and_released() {
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let a = Permit::acquire(&in_flight, 2).unwrap();
+        let _b = Permit::acquire(&in_flight, 2).unwrap();
+        assert!(Permit::acquire(&in_flight, 2).is_none());
+        drop(a);
+        assert!(Permit::acquire(&in_flight, 2).is_some());
+        assert_eq!(in_flight.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn a_panicking_handler_becomes_a_500_envelope() {
+        let (status, body) = contain_route(|| panic!("handler bug"));
+        assert_eq!(status, 500);
+        assert_eq!(body, json!({"ok": false, "error": "internal error"}));
+        assert_eq!(contain_route(|| (200, json!({"ok": true}))).0, 200);
+    }
+
+    /// A loopback server with `workers` workers running `take_body`. Every
+    /// request that reaches `serve` reports its body length and gets a 200.
+    struct Harness {
+        addr: SocketAddr,
+        reads: BodyReads,
+        served: mpsc::Receiver<usize>,
+    }
+
+    fn harness(workers: usize, limit: usize, deadline: Duration) -> Harness {
+        let server = Arc::new(Server::http("127.0.0.1:0").expect("bind loopback"));
+        let addr = server.server_addr().to_ip().unwrap();
+        let reads = BodyReads {
+            in_flight: Arc::new(AtomicUsize::new(0)),
+            limit,
+            deadline,
+            listen_port: Some(addr.port()),
+            watchdog: Watchdog::new(),
+        };
+        let (tx, served) = mpsc::channel();
+        for _ in 0..workers {
+            let server = Arc::clone(&server);
+            let reads = reads.clone();
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                while let Ok(request) = server.recv() {
+                    let tx = tx.clone();
+                    take_body(request, &reads, move |request, body| {
+                        let _ = tx.send(body.len());
+                        respond(request, 200, json!({"ok": true}), None);
+                    });
+                }
+            });
+        }
+        Harness {
+            addr,
+            reads,
+            served,
+        }
+    }
+
+    fn connect(addr: SocketAddr, head: &str, body: &[u8]) -> TcpStream {
+        let mut client = TcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        client.write_all(head.as_bytes()).unwrap();
+        client.write_all(body).unwrap();
+        client
+    }
+
+    /// Everything the server sends until it closes (or 5 s pass).
+    fn response(client: &mut TcpStream) -> String {
+        let mut text = Vec::new();
+        let _ = client.read_to_end(&mut text);
+        String::from_utf8_lossy(&text).into_owned()
+    }
+
+    fn wait_for_zero(in_flight: &AtomicUsize) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while in_flight.load(Ordering::Acquire) != 0 {
+            assert!(Instant::now() < deadline, "body thread never finished");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    const STALLED: &str = "POST /x HTTP/1.1\r\nHost: a\r\nContent-Length: 5000\r\n\r\n";
+
+    #[test]
+    fn stalled_uploads_do_not_occupy_workers() {
+        let deadline = Duration::from_millis(800);
+        let h = harness(2, 8, deadline);
+        // Twice as many stalled uploads as workers: each declares 5000
+        // bytes, sends 10, then goes quiet with the socket open.
+        let stalled: Vec<(Instant, TcpStream)> = (0..4)
+            .map(|_| (Instant::now(), connect(h.addr, STALLED, b"0123456789")))
+            .collect();
+        std::thread::sleep(Duration::from_millis(100));
+        let asked = Instant::now();
+        let mut get = connect(
+            h.addr,
+            "GET /api/dashboard HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n",
+            b"",
+        );
+        let reply = response(&mut get);
+        let took = asked.elapsed();
+        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+        assert!(took < Duration::from_millis(300), "GET took {took:?}");
+        assert_eq!(h.served.recv_timeout(Duration::from_secs(1)).unwrap(), 0);
+        for (opened, mut client) in stalled {
+            let reply = response(&mut client);
+            let after = opened.elapsed();
+            assert!(reply.starts_with("HTTP/1.1 408"), "{reply}");
+            assert!(reply.contains(BODY_TIMEOUT));
+            assert!(after >= deadline, "cut early: {after:?}");
+            assert!(
+                after < deadline + Duration::from_millis(700),
+                "cut late: {after:?}"
+            );
+        }
+        // Cut off by the watchdog, not abandoned: every body thread is gone.
+        wait_for_zero(&h.reads.in_flight);
+        assert!(h.served.try_recv().is_err(), "a stalled upload was served");
+    }
+
+    #[test]
+    fn slow_trickle_is_cut_at_the_total_deadline() {
+        let deadline = Duration::from_millis(600);
+        let h = harness(1, 8, deadline);
+        let opened = Instant::now();
+        let mut client = connect(h.addr, STALLED, b"");
+        let mut writer = client.try_clone().unwrap();
+        // One byte every 100 ms: never idle long, but 5000 bytes would take
+        // over eight minutes.
+        std::thread::spawn(move || {
+            for _ in 0..50 {
+                if writer.write_all(b"x").is_err() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        });
+        let reply = response(&mut client);
+        let after = opened.elapsed();
+        assert!(reply.starts_with("HTTP/1.1 408"), "{reply}");
+        assert!(after >= deadline, "cut early: {after:?}");
+        assert!(
+            after < deadline + Duration::from_millis(700),
+            "cut late: {after:?}"
+        );
+        wait_for_zero(&h.reads.in_flight);
+    }
+
+    #[test]
+    fn uploads_beyond_the_in_flight_cap_are_refused_at_once() {
+        let h = harness(1, 0, Duration::from_secs(30));
+        let asked = Instant::now();
+        let mut client = connect(h.addr, STALLED, b"");
+        assert!(response(&mut client).starts_with("HTTP/1.1 503"));
+        assert!(asked.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn oversized_declared_body_is_refused_without_reading_it() {
+        let h = harness(1, 8, Duration::from_secs(30));
+        let asked = Instant::now();
+        let mut client = connect(
+            h.addr,
+            "POST /x HTTP/1.1\r\nHost: a\r\nContent-Length: 2000000\r\n\r\n",
+            b"",
+        );
+        let reply = response(&mut client);
+        assert!(reply.starts_with("HTTP/1.1 413"), "{reply}");
+        assert!(reply.contains(TOO_LARGE));
+        assert!(asked.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn complete_bodies_are_delivered() {
+        let h = harness(1, 8, Duration::from_secs(5));
+        // Streamed (over tiny_http's 1 KiB prebuffer), chunked, and buffered.
+        let big = vec![b'x'; 3000];
+        let cases: [(&str, &[u8], usize); 3] = [
+            (
+                "POST /x HTTP/1.1\r\nHost: a\r\nConnection: close\r\nContent-Length: 3000\r\n\r\n",
+                &big,
+                3000,
+            ),
+            (
+                "POST /x HTTP/1.1\r\nHost: a\r\nConnection: close\r\nTransfer-Encoding: chunked\r\n\r\n",
+                b"5\r\nhello\r\n0\r\n\r\n",
+                5,
+            ),
+            (
+                "POST /x HTTP/1.1\r\nHost: a\r\nConnection: close\r\nContent-Length: 2\r\n\r\n",
+                b"{}",
+                2,
+            ),
+        ];
+        for (head, body, len) in cases {
+            let mut client = connect(h.addr, head, body);
+            assert!(response(&mut client).starts_with("HTTP/1.1 200"));
+            assert_eq!(h.served.recv_timeout(Duration::from_secs(5)).unwrap(), len);
+        }
+        wait_for_zero(&h.reads.in_flight);
+    }
 }
 
 #[cfg(test)]

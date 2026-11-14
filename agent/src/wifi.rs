@@ -89,21 +89,6 @@ fn iw_info(iface: &str) -> (String, String) {
     (channel, bw)
 }
 
-/// Count associated stations. Calls `iw` directly and counts in Rust — the
-/// old `sh -c "iw ... | grep -c Station"` spawned three processes per band.
-fn station_count(iface: &str) -> u64 {
-    let Ok(output) = Command::new("iw")
-        .args([iface, "station", "dump"])
-        .bounded_output()
-    else {
-        return 0;
-    };
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter(|l| l.trim_start().starts_with("Station "))
-        .count() as u64
-}
-
 fn bandwidth_options(hwmode: &str, standards: &str, is_5g: bool) -> Vec<String> {
     let mode = hwmode.to_ascii_lowercase();
     let supported: Vec<String> = standards
@@ -131,7 +116,11 @@ fn bandwidth_options(hwmode: &str, standards: &str, is_5g: bool) -> Vec<String> 
 // GET /api/wifi/status
 // ---------------------------------------------------------------------------
 
-pub fn wifi_status(_state: &AppState) -> (u16, Value) {
+/// The configuration (`zwrt_wlan report`, `uci show`) is read fresh on every
+/// call: the dashboard verifies a change by reading it back. The runtime parts
+/// (`iw info`, the station dump shared with the client list) sit behind short
+/// TTLs that `wifi_set` invalidates.
+pub fn wifi_status(state: &AppState) -> (u16, Value) {
     let mut result = serde_json::Map::new();
     let report = ubus::call("zwrt_wlan", "report", Some("{}")).ok();
     let cfg = WifiConfig::load();
@@ -211,16 +200,16 @@ pub fn wifi_status(_state: &AppState) -> (u16, Value) {
     result.insert("hidden_5g".into(), json!(cfg.get("main_5g.hidden")));
 
     // Runtime info from iw
-    let (ch2, bw2) = iw_info("wlan0");
-    let (ch5, bw5) = iw_info("wlan2");
+    let [(ch2, bw2), (ch5, bw5)] = state.net.iw_info(|| [iw_info("wlan0"), iw_info("wlan2")]);
     result.insert("actual_channel_2g".into(), json!(ch2));
     result.insert("actual_bw_2g".into(), json!(bw2));
     result.insert("actual_channel_5g".into(), json!(ch5));
     result.insert("actual_bw_5g".into(), json!(bw5));
 
-    // Client counts
-    let c2g = station_count("wlan0");
-    let c5g = station_count("wlan2");
+    // Client counts, from the station dump the client list also uses.
+    let stations = state.net.stations();
+    let c2g = stations.band_2g.len() as u64;
+    let c5g = stations.band_5g.len() as u64;
     result.insert("clients_2g".into(), json!(c2g));
     result.insert("clients_5g".into(), json!(c5g));
     result.insert("clients_total".into(), json!(c2g + c5g));
@@ -423,7 +412,7 @@ fn plan_wifi(parsed: &Value, cfg: &WifiConfig) -> Result<Vec<Change>, String> {
     Ok(changes)
 }
 
-pub fn wifi_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
+pub fn wifi_set(state: &AppState, body: &[u8]) -> (u16, Value) {
     let parsed: Value = match serde_json::from_slice(body) {
         Ok(value) => value,
         Err(error) => {
@@ -438,7 +427,13 @@ pub fn wifi_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
         Ok(changes) => changes,
         Err(error) => return (400, json!({"ok": false, "error": error})),
     };
-    match uci_transaction::apply(&changes) {
+    let applied = uci_transaction::apply(&changes);
+    // Even a failed apply may have reloaded the radios (or restored them), so
+    // whatever was cached before is suspect either way.
+    if !changes.is_empty() {
+        state.net.invalidate_wifi();
+    }
+    match applied {
         Ok(()) => (
             200,
             json!({"ok": true, "data": {"status": "ok", "changed": !changes.is_empty()}}),

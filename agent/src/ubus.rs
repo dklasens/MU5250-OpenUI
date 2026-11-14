@@ -1,18 +1,39 @@
-use crate::process::BoundedCommand;
+use crate::process::{BoundedCommand, DEFAULT_DEADLINE};
 use std::collections::HashMap;
 use std::process::Command;
+use std::time::Duration;
 
 use serde_json::Value;
 
+/// Deadline for poll-driven reads behind an `Observed` source. These run on
+/// the dashboard heartbeat, where a hung firmware daemon should cost a few
+/// seconds and a stale reading, not the default 10 s per source.
+pub const POLL_DEADLINE: Duration = Duration::from_secs(3);
+
 /// Call `ubus call <object> <method> [<params>]` and parse JSON output.
 pub fn call(object: &str, method: &str, params: Option<&str>) -> Result<Value, String> {
+    call_within(object, method, params, DEFAULT_DEADLINE)
+}
+
+/// `call` with `POLL_DEADLINE`. Only for idempotent reads that are retried on
+/// the next poll anyway; mutations and slow on-demand calls use `call`.
+pub fn call_poll(object: &str, method: &str, params: Option<&str>) -> Result<Value, String> {
+    call_within(object, method, params, POLL_DEADLINE)
+}
+
+fn call_within(
+    object: &str,
+    method: &str,
+    params: Option<&str>,
+    timeout: Duration,
+) -> Result<Value, String> {
     let mut cmd = Command::new("ubus");
     cmd.args(["call", object, method]);
     if let Some(p) = params {
         cmd.arg(p);
     }
     let output = cmd
-        .bounded_output()
+        .bounded_output_within(timeout)
         .map_err(|e| format!("ubus exec: {e}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -38,13 +59,33 @@ pub fn call(object: &str, method: &str, params: Option<&str>) -> Result<Value, S
 ///
 /// One subprocess instead of one per key. `wifi_status` used to issue ~28
 /// separate `uci get` calls, each a fork+exec, to build a single response.
+///
+/// A failed read yields an empty map, so every key reads as missing. Callers
+/// that must tell "unreadable" from "empty" use `try_uci_show`.
 pub fn uci_show(config: &str) -> HashMap<String, String> {
-    let output = match Command::new("uci").args(["show", config]).bounded_output() {
-        Ok(o) if o.status.success() => o,
-        _ => return HashMap::new(),
-    };
+    try_uci_show(config).unwrap_or_default()
+}
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+/// `uci_show`, reporting a failed `uci show` as an error instead of an empty map.
+pub fn try_uci_show(config: &str) -> Result<HashMap<String, String>, String> {
+    let output = Command::new("uci")
+        .args(["show", config])
+        .bounded_output()
+        .map_err(|e| format!("uci exec: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "uci show {config}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(parse_uci_show(
+        config,
+        &String::from_utf8_lossy(&output.stdout),
+    ))
+}
+
+/// Parse `uci show <config>` output into `section.option` -> unquoted value.
+fn parse_uci_show(config: &str, stdout: &str) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for line in stdout.lines() {
         let Some((key, value)) = line.split_once('=') else {
@@ -126,7 +167,21 @@ pub fn uci_commit(config: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::uci_unquote;
+    use super::{parse_uci_show, uci_unquote};
+
+    #[test]
+    fn parses_show_output_into_section_option_keys() {
+        let out = "zwrt_router.network=zte_router\n\
+                   zwrt_router.network.lan_ipaddr='192.168.0.1'\n\
+                   zwrt_router.dhcp.leasetime='86400'\n\
+                   zwrt_routerx.other.key='ignored'\n\
+                   garbage line\n";
+        let map = parse_uci_show("zwrt_router", out);
+        assert_eq!(map["network"], "zte_router");
+        assert_eq!(map["network.lan_ipaddr"], "192.168.0.1");
+        assert_eq!(map["dhcp.leasetime"], "86400");
+        assert_eq!(map.len(), 3, "{map:?}");
+    }
 
     #[test]
     fn unquotes_plain_values() {

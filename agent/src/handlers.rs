@@ -19,8 +19,14 @@ use crate::ubus;
 // laptop) collapse onto one refresh instead of multiplying the load.
 const SIGNAL_TTL: Duration = Duration::from_secs(1);
 const THERMAL_TTL: Duration = Duration::from_secs(10);
-const WAN_TTL: Duration = Duration::from_secs(30);
-const DATA_USAGE_TTL: Duration = Duration::from_secs(30);
+// The three ~30 s sources are staggered so they do not all expire on the same
+// poll: together they cost up to 7-9 forks, which used to land in one request.
+const WAN_TTL: Duration = Duration::from_secs(29);
+const WAN6_TTL: Duration = Duration::from_secs(31);
+const DATA_USAGE_TTL: Duration = Duration::from_secs(37);
+/// How old the speed source's `get_wwandst` reply may be for data usage to
+/// reuse it instead of issuing the identical call again.
+const WWANDST_SHARE_AGE: Duration = Duration::from_secs(2);
 /// Billing-cycle dates move once a month.
 const CYCLE_DATE_TTL: Duration = Duration::from_secs(300);
 
@@ -52,6 +58,8 @@ pub struct AppState {
     pub proc_tracker: ProcessTracker,
     pub at_port: AtPort,
     pub dash: Arc<DashboardCache>,
+    /// Client list, station dump and `iw info` (see `network_ext::NetworkCache`).
+    pub net: Arc<crate::network_ext::NetworkCache>,
     pub radio: Arc<Observed<Value>>,
     pub charge_limit: Arc<ChargeLimitEnforcer>,
     pub signal_logger: Arc<SignalLogger>,
@@ -62,7 +70,11 @@ pub struct AppState {
 impl AppState {
     pub fn new() -> Self {
         let binding = Arc::new(crate::lan::Binding::new());
-        let lan = Arc::new(crate::lan::LanManager::new(binding.clone()));
+        let net = Arc::new(crate::network_ext::NetworkCache::default());
+        let lan = Arc::new(crate::lan::LanManager::new(binding.clone(), {
+            let net = net.clone();
+            Box::new(move || net.invalidate_lan())
+        }));
         let dash = Arc::new(DashboardCache::default());
         let radio = Arc::new(Observed::default());
         let env_u32 = |key: &str, default: u32| {
@@ -90,6 +102,7 @@ impl AppState {
             proc_tracker: ProcessTracker::new(),
             at_port: AtPort::new(),
             dash,
+            net,
             radio,
             charge_limit: Arc::new(ChargeLimitEnforcer::new()),
             signal_logger: Arc::new(SignalLogger::new()),
@@ -232,7 +245,7 @@ pub fn data_usage_reset_day_set(state: &AppState, body: &[u8]) -> (u16, Value) {
         Ok(_) => {
             state.dash.data_usage.invalidate();
             state.dash.cycle_dates.invalidate();
-            match read_data_usage_live(&state.dash) {
+            match read_data_usage_live(&state.dash, None) {
                 Ok(data) => (200, json!({"ok": true, "data": data})),
                 Err(e) => (503, json!({"ok": false, "error": e})),
             }
@@ -241,13 +254,14 @@ pub fn data_usage_reset_day_set(state: &AppState, body: &[u8]) -> (u16, Value) {
     }
 }
 
-fn read_data_usage_live(cache: &DashboardCache) -> Result<Value, String> {
-    let stats = ubus::call(
-        "zwrt_data",
-        "get_wwandst",
-        Some(r#"{"source_module":"web","cid":1,"type":4}"#),
-    )?;
-    let clear = ubus::call(
+/// `stats` is a recent `get_wwandst` reply to reuse (the speed source issues
+/// the identical call every second); `None` reads it here.
+fn read_data_usage_live(cache: &DashboardCache, stats: Option<Value>) -> Result<Value, String> {
+    let stats = match stats {
+        Some(stats) => stats,
+        None => system::read_wwandst()?,
+    };
+    let clear = ubus::call_poll(
         "zwrt_data",
         "get_wwandst_clearday",
         Some(r#"{"source_module":"web","cid":1,"type":4}"#),
@@ -367,7 +381,9 @@ pub fn system_kill_bloat(_state: &AppState, body: &[u8]) -> (u16, Value) {
 ///
 /// This is the app's heartbeat: Home, Signal and Modem/Data all read it rather
 /// than polling their own endpoints. Free sources (procfs/sysfs) are read every
-/// time; each ubus/uci source sits behind its own TTL.
+/// time; each ubus/uci source sits behind its own TTL, with a short subprocess
+/// deadline (`ubus::POLL_DEADLINE`). A source that is mid-refresh in another
+/// request is served stale rather than waited on (see `cache::Observed`).
 pub fn dashboard(state: &AppState) -> (u16, Value) {
     let cache = &state.dash;
 
@@ -382,17 +398,18 @@ pub fn dashboard(state: &AppState) -> (u16, Value) {
     // Raw ubus passthroughs — the dashboard client maps these itself.
     let signal = read_radio(&state.radio);
     let wan = cache.wan.read(WAN_TTL, || {
-        ubus::call("network.interface.zte_wan", "status", Some("{}"))
+        ubus::call_poll("network.interface.zte_wan", "status", Some("{}"))
     });
-    let wan6 = cache.wan6.read(WAN_TTL, || {
-        ubus::call("network.interface.zte_wan6", "status", Some("{}"))
+    let wan6 = cache.wan6.read(WAN6_TTL, || {
+        ubus::call_poll("network.interface.zte_wan6", "status", Some("{}"))
     });
     let thermal = cache.thermal.read(THERMAL_TTL, || {
-        ubus::call("zwrt_bsp.thermal", "get_cpu_temp", Some("{}"))
+        ubus::call_poll("zwrt_bsp.thermal", "get_cpu_temp", Some("{}"))
     });
-    let data_usage = cache
-        .data_usage
-        .read(DATA_USAGE_TTL, || read_data_usage_live(cache));
+    // `speed` above has just refreshed `get_wwandst` (1 s TTL); reuse it.
+    let data_usage = cache.data_usage.read(DATA_USAGE_TTL, || {
+        read_data_usage_live(cache, state.speed.recent_wwandst(WWANDST_SHARE_AGE))
+    });
 
     let mut result = serde_json::Map::new();
     result.insert("device".into(), device);
@@ -427,7 +444,7 @@ pub fn dashboard(state: &AppState) -> (u16, Value) {
 
 pub fn read_radio(source: &Observed<Value>) -> Sample<Value> {
     source.read(SIGNAL_TTL, || {
-        ubus::call("zte_nwinfo_api", "nwinfo_get_netinfo", Some("{}"))
+        ubus::call_poll("zte_nwinfo_api", "nwinfo_get_netinfo", Some("{}"))
     })
 }
 

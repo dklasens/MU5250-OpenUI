@@ -4,6 +4,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::cache::{Cached, Observed, Sample};
 use crate::util::MutexExt;
@@ -306,6 +307,8 @@ struct WanCounters {
 pub struct SpeedTracker {
     source: Observed<SpeedSnapshot>,
     previous: Mutex<Option<(Instant, WanCounters)>>,
+    /// The last raw `get_wwandst` reply, for data usage to reuse.
+    last_reply: Mutex<Option<(Instant, Value)>>,
 }
 
 impl SpeedTracker {
@@ -313,12 +316,15 @@ impl SpeedTracker {
         Self {
             source: Observed::default(),
             previous: Mutex::new(None),
+            last_reply: Mutex::new(None),
         }
     }
 
     pub fn sample(&self) -> Sample<SpeedSnapshot> {
         self.source.read(SPEED_TTL, || {
-            let current = read_wan_counters()?;
+            let stats = read_wwandst()?;
+            *self.last_reply.safe_lock() = Some((Instant::now(), stats.clone()));
+            let current = wan_counters(&stats)?;
             let now = Instant::now();
             let mut previous = self.previous.safe_lock();
             let snapshot = speed_snapshot(previous.as_ref(), now, &current);
@@ -326,18 +332,33 @@ impl SpeedTracker {
             Ok(snapshot)
         })
     }
+
+    /// The speed source's last `get_wwandst` reply, if it is at most `max_age`
+    /// old. Data usage issues the identical call, so it reuses this one.
+    pub fn recent_wwandst(&self, max_age: Duration) -> Option<Value> {
+        self.last_reply
+            .safe_lock()
+            .as_ref()
+            .filter(|(at, _)| at.elapsed() <= max_age)
+            .map(|(_, stats)| stats.clone())
+    }
 }
 
-fn read_wan_counters() -> Result<WanCounters, String> {
-    let stats = crate::ubus::call(
+/// `zwrt_data get_wwandst` for the web module's cid 1: the WAN counters behind
+/// both the throughput and the data-usage readings.
+pub fn read_wwandst() -> Result<Value, String> {
+    crate::ubus::call_poll(
         "zwrt_data",
         "get_wwandst",
         Some(r#"{"source_module":"web","cid":1,"type":4}"#),
-    )?;
+    )
+}
+
+fn wan_counters(stats: &Value) -> Result<WanCounters, String> {
     let counter = |key: &str| -> Result<u64, String> {
         match stats.get(key) {
-            Some(serde_json::Value::Number(n)) => n.as_u64(),
-            Some(serde_json::Value::String(s)) => s.trim().parse().ok(),
+            Some(Value::Number(n)) => n.as_u64(),
+            Some(Value::String(s)) => s.trim().parse().ok(),
             _ => None,
         }
         .ok_or_else(|| format!("get_wwandst: {key} unavailable"))
@@ -424,9 +445,14 @@ impl FirmwareInfo {
         if state.1.is_some_and(|at| at.elapsed() < FIRMWARE_RETRY) {
             return None;
         }
+        // Claim the attempt, then release the lock for the subprocess: this
+        // runs on the dashboard heartbeat, and a hung daemon must not queue
+        // every worker behind it. Concurrent callers see the fresh attempt
+        // and return None, as they would after a failed read.
         state.1 = Some(Instant::now());
+        drop(state);
         let info =
-            crate::ubus::call("zwrt_zte_mdm.api", "get_zwrt_common_info", Some("{}")).ok()?;
+            crate::ubus::call_poll("zwrt_zte_mdm.api", "get_zwrt_common_info", Some("{}")).ok()?;
         let text = |key: &str| {
             info.get(key)
                 .and_then(|v| v.as_str())
@@ -439,7 +465,7 @@ impl FirmwareInfo {
             hardware: text("hardware_version"),
         };
         if identity.version.is_some() {
-            state.0 = Some(identity.clone());
+            self.state.safe_lock().0 = Some(identity.clone());
         }
         Some(identity)
     }
@@ -530,31 +556,32 @@ pub struct KillBloatResult {
     pub freed_rss_kb: u64,
 }
 
+/// A /proc scan is reused for this long. CPU% is computed over the window
+/// between scans, so it is never shorter than this either.
+const PROCESS_TTL: Duration = Duration::from_secs(3);
+
 pub struct ProcessTracker {
     prev: Mutex<(HashMap<u32, u64>, u64)>,
-    cache: Mutex<(std::time::Instant, Option<ProcessListResult>)>,
+    /// Single-flight: concurrent callers share one scan instead of each
+    /// scanning /proc, which also left the second computing CPU% over a
+    /// near-zero window.
+    cache: Cached<ProcessListResult>,
 }
 
 impl ProcessTracker {
     pub fn new() -> Self {
         Self {
             prev: Mutex::new((HashMap::new(), 0)),
-            cache: Mutex::new((std::time::Instant::now(), None)),
+            cache: Cached::default(),
         }
     }
 
     pub fn sample(&self) -> ProcessListResult {
-        {
-            let cache = self.cache.safe_lock();
-            if let Some(ref result) = cache.1 {
-                if cache.0.elapsed().as_secs() < 3 {
-                    return result.clone();
-                }
-            }
-        }
-        let result = self.sample_fresh();
-        *self.cache.safe_lock() = (std::time::Instant::now(), Some(result.clone()));
-        result
+        self.sample_with(|| self.sample_fresh())
+    }
+
+    fn sample_with(&self, scan: impl FnOnce() -> ProcessListResult) -> ProcessListResult {
+        self.cache.get_or_refresh(PROCESS_TTL, scan)
     }
 
     fn sample_fresh(&self) -> ProcessListResult {
@@ -605,8 +632,15 @@ impl ProcessTracker {
                 Some(i) => i,
                 None => continue,
             };
-            let comm = stat_str[comm_start..comm_end].to_string();
-            let after_comm = &stat_str[comm_end + 2..]; // skip ") "
+            // A malformed line (no space after ')', or ')' before '(') is
+            // skipped rather than allowed to panic on the slice bounds.
+            let (Some(comm), Some(after_comm)) = (
+                stat_str.get(comm_start..comm_end),
+                stat_str.get(comm_end + 2..), // skip ") "
+            ) else {
+                continue;
+            };
+            let comm = comm.to_string();
             let fields: Vec<&str> = after_comm.split_whitespace().collect();
             // fields[0]=state, fields[11]=utime, fields[12]=stime, fields[21]=rss(pages)
             if fields.len() < 22 {
@@ -957,5 +991,56 @@ mod tests {
             &protected
         ));
         assert!(!is_safe_optional_daemon("zte_smart_manage", &protected));
+    }
+
+    fn empty_process_list() -> ProcessListResult {
+        ProcessListResult {
+            processes: Vec::new(),
+            total_count: 0,
+            bloat_count: 0,
+            bloat_cpu_pct: 0.0,
+            bloat_rss_kb: 0,
+        }
+    }
+
+    #[test]
+    fn concurrent_process_samples_share_one_scan() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let tracker = ProcessTracker::new();
+        let scans = AtomicU32::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..6 {
+                scope.spawn(|| {
+                    let result = tracker.sample_with(|| {
+                        scans.fetch_add(1, Ordering::Relaxed);
+                        std::thread::sleep(Duration::from_millis(50));
+                        ProcessListResult {
+                            total_count: 7,
+                            ..empty_process_list()
+                        }
+                    });
+                    // Nobody had a list yet, so everyone waited for the one scan.
+                    assert_eq!(result.total_count, 7);
+                });
+            }
+        });
+        assert_eq!(scans.load(Ordering::Relaxed), 1);
+        // Within the TTL the scan is reused.
+        let again = tracker.sample_with(|| panic!("rescanned within the TTL"));
+        assert_eq!(again.total_count, 7);
+    }
+
+    #[test]
+    fn wwandst_reply_is_shared_only_while_recent() {
+        let speed = SpeedTracker::new();
+        assert!(speed.recent_wwandst(Duration::from_secs(2)).is_none());
+        let reply = serde_json::json!({"real_rx_bytes": 1, "day_rx_bytes": 2});
+        *speed.last_reply.safe_lock() = Some((Instant::now(), reply.clone()));
+        assert_eq!(speed.recent_wwandst(Duration::from_secs(2)), Some(reply));
+        *speed.last_reply.safe_lock() = Some((
+            Instant::now() - Duration::from_secs(3),
+            serde_json::json!({}),
+        ));
+        assert!(speed.recent_wwandst(Duration::from_secs(2)).is_none());
     }
 }

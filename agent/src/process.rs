@@ -1,8 +1,15 @@
 use std::process::{Command, Output};
 use std::time::Duration;
 
+/// Default subprocess deadline.
+pub const DEFAULT_DEADLINE: Duration = Duration::from_secs(10);
+const OUTPUT_LIMIT: usize = 2 * 1024 * 1024;
+
 pub trait BoundedCommand {
     fn bounded_output(&mut self) -> std::io::Result<Output>;
+    /// `bounded_output` with a different deadline, for callers that must give
+    /// up sooner (poll-driven reads on the dashboard heartbeat).
+    fn bounded_output_within(&mut self, timeout: Duration) -> std::io::Result<Output>;
     /// For helpers that hold a resource they must release themselves: `input` on stdin, SIGTERM
     /// at `timeout`, then `grace` to exit before SIGKILL (see `process_runner::output_with_grace`).
     fn bounded_output_with_grace(
@@ -23,7 +30,10 @@ pub trait BoundedCommand {
 }
 impl BoundedCommand for Command {
     fn bounded_output(&mut self) -> std::io::Result<Output> {
-        process_runner::output(self, None, Duration::from_secs(10), 2 * 1024 * 1024)
+        self.bounded_output_within(DEFAULT_DEADLINE)
+    }
+    fn bounded_output_within(&mut self, timeout: Duration) -> std::io::Result<Output> {
+        process_runner::output(self, None, timeout, OUTPUT_LIMIT)
     }
     fn bounded_output_with_grace(
         &mut self,
