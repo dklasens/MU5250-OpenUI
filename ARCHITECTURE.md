@@ -56,6 +56,11 @@ a singleton ubus object that makes a second instance unreliable.
   If the accept thread dies (EMFILE, interface churn), a supervisor drains the
   workers and rebuilds the listener with backoff (1 s up to 30 s). The listener
   also rebuilds when a confirmed LAN change bumps `Binding::generation`.
+- **Panics:** `panic = "unwind"` is kept and contained, since nothing restarts
+  the process. A hook (`diag_log::install_panic_hook`) logs message, location
+  and thread. Workers catch panics per request; background loops restart via
+  `diag_log::supervise`/`contain`. Locks use `safe_lock()`, which ignores
+  poisoning.
 - **Bind:** the configured LAN IPv4 (`zwrt_router.network.lan_ipaddr`) on
   `:9090`, not loopback, not `0.0.0.0`. `ZTE_AGENT_BIND` pins it, which
   disables LAN IP changes.
@@ -64,9 +69,10 @@ Long-lived background threads:
 
 | Thread | Cadence | Purpose |
 |---|---|---|
-| Event bus (`event_bus.rs`) | blocking | One `ubus listen` child. Dispatches events to subscribers over bounded channels (capacity 64, drop-on-full) and restarts after 5 s if the child exits |
+| Event bus (`event_bus.rs`) | blocking | One `ubus listen` child. Dispatches events to subscribers over bounded channels (capacity 64, drop-on-full) and restarts after 5 s if the child exits or the loop panics (the child is killed and reaped) |
 | Charge enforcer (`charge_policy.rs`) | 60 s while a limit is active, else 300 s, plus `BSP_CHARGER_EVENT` | Reconciles charger state against the persisted policy |
-| Logger sessions (`logging.rs`) | 1–60 s, only while running | Signal and connection CSV logging from the shared radio sample |
+| Logger sessions (`logging.rs`) | 1–60 s, only while running | Signal and connection CSV logging from the shared radio sample. A drop guard clears `running` even if the session panics |
+| Diagnostics drain (`diag_log.rs`) | blocking | Copies stdout/stderr into the log file. Survives read errors and panics; if it ever ends, stdout/stderr are pointed at `/dev/null` so `eprintln!` cannot fail |
 | USB boot enforcement (`usb.rs`) | once at boot, up to 75 s | Re-applies NCM only if it was explicitly persisted, and skips power-off-charging states |
 | LAN transition (`lan.rs`) | only during a LAN change | Applies the change, then waits up to 120 s for confirmation before rolling back |
 
@@ -82,9 +88,24 @@ Long-lived background threads:
    PIN login is accepted only from mobile user agents.
 3. Destructive paths (`reboot`, `shutdown`, `kill-bloat`) need `X-Confirm: true`.
 4. CSV downloads stream straight from the file, with length snapshotted at open.
-5. Everything else: the body is read with a 1 MiB cap, then
-   `route(method, path)` dispatches to a handler that returns
+5. Everything else: `route(method, path)` dispatches to a handler that returns
    `(status, serde_json::Value)`, which goes out as `{"ok", "data"|"error"}`.
+   A panicking handler yields a 500 envelope and the worker keeps serving.
+
+Before any of this, the body is taken (`take_body`), because tiny_http sets
+no socket timeouts and drains any unread body when it drops a request. Bodies
+tiny_http has already buffered (≤ 1 KiB, no `Expect`) are read in place and
+served on the worker. A declared length over 1 MiB gets an immediate 413.
+Anything still on the socket goes to a body thread, at most 8 at once (503
+beyond), which reads it and then serves the request itself (steps 1–5, panics
+contained), so the worker returns to `recv` at once. A shared watchdog thread
+enforces a 10 s total deadline per body, trickling clients included: it shuts
+down the socket's read side (found by address among the process's
+descriptors), the read ends, and the client gets a 408. Error responses on a
+partly read body shut the read side down first, so the drain cannot block and
+the connection closes. Body threads hold the request and `AppState`, not the
+listener, so a listener rebuild does not wait for them; they finish on their
+own connection within the deadline plus handler time.
 
 ### Data sources and caching (`cache.rs`, `handlers.rs`)
 
@@ -92,12 +113,21 @@ Every ubus/uci read is a fork+exec. Measured on the device, a `ubus call`
 costs about 4–5 ms wall-clock, so the cost is real but modest. Poll-driven
 reads sit behind one of two wrappers:
 
-- `Cached<T>`: value plus timestamp. The lock is held during refresh, so
-  concurrent callers share one refresh.
+- `Cached<T>`: value plus timestamp.
 - `Observed<T>`: the same, plus it **keeps the last good value** when a
-  refresh fails, throttles retries to the TTL, and reports `Freshness`
-  (`sampled_at_ms`, `age_ms`, `ttl_ms`, `stale`, `error`). The dashboard
-  surfaces this as source warnings.
+  refresh fails and reports `Freshness` (`sampled_at_ms`, `age_ms`, `ttl_ms`,
+  `stale`, `error`). The dashboard surfaces this as source warnings.
+
+Both refresh single-flight **without holding the lock across the
+subprocess**: while one caller refreshes, others get the previous value
+(reported stale once older than the TTL), so a hung daemon costs one request,
+not every worker. Only a source with no value and no failure yet makes callers
+wait for the refresh, for at most 3 s (`Cached` waits for the refresh to
+finish). After consecutive failures the retry interval doubles from the TTL up
+to 30 s (never below the TTL), and resets on success. An `invalidate()` during
+a refresh forces another read. Heartbeat ubus reads use `ubus::call_poll`
+(3 s deadline instead of the default 10 s); mutations and on-demand calls keep
+10 s.
 
 `GET /api/dashboard` is the heartbeat batch:
 
@@ -109,8 +139,8 @@ reads sit behind one of two wrappers:
 | `speed` | `ubus zwrt_data get_wwandst` `real_*` counters, averaged between samples (see below) | 1 s |
 | `signal` | `ubus zte_nwinfo_api nwinfo_get_netinfo` (shared `Arc<Observed>` with the loggers) | 1 s |
 | `thermal` | `ubus zwrt_bsp.thermal get_cpu_temp` | 10 s |
-| `wan`, `wan6` | `ubus network.interface.zte_wan[6] status` | 30 s |
-| `data_usage` | `ubus zwrt_data get_wwandst` + `get_wwandst_clearday` (+ uci cycle dates, 300 s) | 30 s |
+| `wan`, `wan6` | `ubus network.interface.zte_wan[6] status` | 29 s, 31 s |
+| `data_usage` | `ubus zwrt_data get_wwandst` (reuses the `speed` source's reply when under 2 s old) + `get_wwandst_clearday` (+ uci cycle dates, 300 s) | 37 s |
 | `sources` | freshness metadata for the six `Observed` sources above | — |
 
 **Throughput** comes from the modem's own WAN counters, not the `rmnet_*`
@@ -122,10 +152,29 @@ previous sample instead, which is smoother at the dashboard's 3 s poll. It
 uses the firmware's one-second figure when there is no sample from the last
 10 s or the counters reset on reconnect.
 
-Other endpoints read on demand: Wi-Fi (`zwrt_wlan report` + `uci show wireless`
-+ `iw`), clients (`luci-rpc getDHCPLeases` + `/proc/net/arp` + `iw station dump`
-+ `bridge fdb`), full thermal zones (sysfs), process list (`/proc`, 3 s cache),
-and USB status (`zwrt_bsp.usb list` + configfs + UDC sysfs).
+The wan, wan6 and data-usage TTLs are staggered (29/31/37 s) so their 7–9
+forks do not all land on the same poll.
+
+Other endpoints read on demand, some behind short caches (`NetworkCache` in
+`network_ext.rs`, plus statics noted below):
+
+| Endpoint | Sources | Cache |
+|---|---|---|
+| `/api/wifi/status` | `zwrt_wlan report` + `uci show wireless` + `uci show zte_mbb` | none: the dashboard verifies changes by reading them back |
+| | `iw <iface> info` (live channel and width) | 5 s |
+| | `iw <iface> station dump` (client counts), shared with the client list | 5 s |
+| `/api/network/clients` | `luci-rpc getDHCPLeases` + `/proc/net/arp` + station dump + `bridge fdb`, assembled | 5 s |
+| | wired link speed: sysfs, else `ethtool` (memoised per interface) | 60 s (ethtool only) |
+| `/api/ttl/status` | `iptables` + `ip6tables -t mangle -L PREROUTING` | 10 s |
+| `/api/router/lan` | one `uci show zwrt_router`; a failed read is a 503 | none |
+| `/api/system/top` | `/proc` scan, single-flight | 3 s |
+
+Mutations invalidate what they change, so a read that follows one is fresh:
+`PUT /api/wifi/settings` (any non-empty change, even a failed one) drops the
+station dump, `iw info` and the client list; every LAN apply or rollback
+(`lan.rs`, including the boot-time recovery) drops the client list; `ttl/set`
+and `ttl/clear` drop the TTL status. Full thermal zones (sysfs) and USB status
+(`zwrt_bsp.usb list` + configfs + UDC sysfs) are uncached.
 
 ### Mutations
 

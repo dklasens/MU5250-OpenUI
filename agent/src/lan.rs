@@ -152,18 +152,32 @@ impl Backend for Hardware {
     }
 }
 
+/// Called after every attempt to write LAN settings, so caches of what they
+/// affect (the client list) are re-read.
+pub type OnChange = Box<dyn Fn() + Send + Sync>;
+
 pub struct LanManager {
     state: Mutex<State>,
     binding: Arc<Binding>,
     backend: Arc<dyn Backend>,
+    on_change: OnChange,
 }
 impl LanManager {
-    pub fn new(binding: Arc<Binding>) -> Self {
+    pub fn new(binding: Arc<Binding>, on_change: OnChange) -> Self {
         Self {
             state: Mutex::default(),
             binding,
             backend: Arc::new(Hardware),
+            on_change,
         }
+    }
+
+    /// `backend.apply`, then the invalidation hook, whatever the outcome: a
+    /// failed apply may still have changed some settings.
+    fn apply(&self, settings: &LanSettings) -> Result<(), String> {
+        let result = self.backend.apply(settings);
+        (self.on_change)();
+        result
     }
 
     /// Before starting the listener, recover any change that was never confirmed.
@@ -174,7 +188,7 @@ impl LanManager {
                 return Ok(());
             };
             crate::router::validate_lan_settings(&journal.previous)?;
-            self.backend.apply(&journal.previous)?;
+            self.apply(&journal.previous)?;
             self.binding.set(&journal.previous.ipaddr);
             self.backend.clear()
         })();
@@ -245,7 +259,7 @@ impl LanManager {
         let Some(pending) = state.pending.as_mut() else {
             return;
         };
-        match self.backend.apply(&pending.journal.proposed) {
+        match self.apply(&pending.journal.proposed) {
             Ok(()) => {
                 self.binding.set(&pending.journal.proposed.ipaddr);
                 pending.applied = true;
@@ -272,7 +286,7 @@ impl LanManager {
         let Some(pending) = &state.pending else {
             return;
         };
-        match self.backend.apply(&pending.journal.previous) {
+        match self.apply(&pending.journal.previous) {
             Ok(()) => {
                 self.binding.set(&pending.journal.previous.ipaddr);
                 match self.backend.clear() {
@@ -380,6 +394,9 @@ mod tests {
         }
     }
     fn fixture() -> (Arc<LanManager>, Arc<Fake>) {
+        fixture_with(Box::new(|| {}))
+    }
+    fn fixture_with(on_change: OnChange) -> (Arc<LanManager>, Arc<Fake>) {
         let backend = Arc::new(Fake {
             settings: Mutex::new(settings(0)),
             journal: Mutex::new(None),
@@ -395,6 +412,7 @@ mod tests {
                 state: Mutex::default(),
                 binding,
                 backend: backend.clone(),
+                on_change,
             }),
             backend,
         )
@@ -414,6 +432,21 @@ mod tests {
         assert!(backend.load().unwrap().is_none());
         assert!(!manager.expire(Instant::now() + Duration::from_secs(121)));
         assert_eq!(backend.read().unwrap(), settings(1));
+    }
+    #[test]
+    fn every_apply_and_rollback_invalidates_dependent_caches() {
+        use std::sync::atomic::AtomicUsize;
+        let changes = Arc::new(AtomicUsize::new(0));
+        let counter = changes.clone();
+        let (manager, _backend) = fixture_with(Box::new(move || {
+            counter.fetch_add(1, Ordering::Relaxed);
+        }));
+        manager.begin(settings(1)).unwrap();
+        assert_eq!(changes.load(Ordering::Relaxed), 0, "nothing applied yet");
+        manager.apply_pending();
+        assert_eq!(changes.load(Ordering::Relaxed), 1);
+        manager.expire(Instant::now() + Duration::from_secs(121));
+        assert_eq!(changes.load(Ordering::Relaxed), 2, "rollback");
     }
     #[test]
     fn timeout_restores_configuration_and_listener() {

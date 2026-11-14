@@ -287,7 +287,7 @@ fn hex_nibble(b: u8) -> Result<u8, ()> {
 fn epoch_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_secs()
 }
 

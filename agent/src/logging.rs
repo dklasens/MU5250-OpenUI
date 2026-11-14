@@ -72,7 +72,16 @@ impl Session {
             ..State::default()
         };
         let session = self.clone();
-        std::thread::spawn(move || session.run(radio, path, header, rows, duration, interval));
+        let spawned = std::thread::Builder::new()
+            .name("logger".into())
+            .spawn(move || session.run(radio, path, header, rows, duration, interval));
+        if let Err(error) = spawned {
+            state.running = false;
+            return (
+                503,
+                json!({"ok": false, "error": format!("cannot start logger thread: {error}")}),
+            );
+        }
         (
             200,
             json!({"ok": true, "data": {"duration_secs": duration, "interval_secs": interval}}),
@@ -102,6 +111,9 @@ impl Session {
         duration: u64,
         interval: u64,
     ) {
+        // Clears `running` however this returns, including by panic, so a
+        // crashed session cannot leave start() answering 409 forever.
+        let _running = Running(self);
         let result = (|| -> Result<(), String> {
             let temporary = format!("{path}.new");
             let file = OpenOptions::new()
@@ -161,11 +173,21 @@ impl Session {
             let flushed = writer.flush().map_err(|e| e.to_string());
             sampling.and(flushed)
         })();
-        let mut state = self.state.safe_lock();
         if let Err(error) = result {
-            state.error = Some(error);
+            self.state.safe_lock().error = Some(error);
         }
+    }
+}
+
+struct Running<'a>(&'a Session);
+
+impl Drop for Running<'_> {
+    fn drop(&mut self) {
+        let mut state = self.0.state.safe_lock();
         state.running = false;
+        if std::thread::panicking() {
+            state.error = Some("logger stopped after an internal error".into());
+        }
     }
 }
 
@@ -211,6 +233,38 @@ pub fn open_download(path: &str) -> io::Result<(File, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_panicking_session_releases_running() {
+        fn exploding_rows(_: u64, _: &Value, _: &mut Option<Value>) -> Vec<String> {
+            panic!("row builder bug");
+        }
+        let dir = std::env::temp_dir().join(format!("zte-agent-logger-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path: &'static str = Box::leak(
+            dir.join("log.csv")
+                .to_string_lossy()
+                .into_owned()
+                .into_boxed_str(),
+        );
+        // A radio sample fresh enough that read_radio serves it without ubus.
+        let radio = Arc::new(Observed::default());
+        radio.read(Duration::from_secs(3600), || Ok(json!({"rsrp": -90})));
+        let session = Arc::new(Session::new());
+        let body = br#"{"duration_secs": 60, "interval_secs": 1}"#;
+        let (status, _) = session.start(body, radio.clone(), path, "h", exploding_rows);
+        assert_eq!(status, 200);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while session.state.safe_lock().running {
+            assert!(Instant::now() < deadline, "running stuck after panic");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(session.state.safe_lock().error.is_some());
+        // And a new session can start.
+        let (status, _) = session.start(body, radio, path, "h", exploding_rows);
+        assert_eq!(status, 200);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn size_limit_rejects_whole_row_and_bounds_output() {
         let mut writer = CsvWriter::new(Vec::new(), 8);
