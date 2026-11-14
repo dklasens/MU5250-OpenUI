@@ -273,7 +273,8 @@ class RadioReadBack(MockCase):
         self.assertEqual(self.signal()['nr5g_pci'], 745)
         self.data('POST', '/api/cell/lock/reset')
         after = self.signal()
-        self.assertEqual((after['lock_nr_cell'], after['lock_lte_cell']), ('', ''))
+        # Like the device: reset leaves zeros, not the pristine empty strings.
+        self.assertEqual((after['lock_nr_cell'], after['lock_lte_cell']), ('0,0,0', '0,0'))
         self.assertEqual(after['nr5g_pci'], 745)
 
     def test_lock_requests_are_recorded_with_their_bodies(self):

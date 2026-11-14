@@ -8,6 +8,7 @@
 
 import { get, post, put, readCsv, req } from './client'
 import { normaliseBands, parseLteBandLock, parseNrBandLock } from './bands'
+import { parseLteCellLock, parseNrCellLock } from './cellLock'
 import { mapDataUsage } from './usage'
 import { boolLike, finiteNumber, intInRange, isObj, nonEmptyStr, nonNegative, nonNegativeInt, obj, str, strList, arr } from './validate'
 import { widthMhz } from './wifiWidth'
@@ -394,6 +395,10 @@ export function mapSignal(d: Record<string, unknown>): SignalInfo {
     raw_nr_band_lock: `SA=${String(rawSa ?? '')} NSA=${String(rawNsa ?? '')}`,
     raw_nr_sa_band_lock: str(rawSa),
     raw_nr_nsa_band_lock: str(rawNsa),
+    nr_cell_lock_state: parseNrCellLock(d.lock_nr_cell),
+    lte_cell_lock_state: parseLteCellLock(d.lock_lte_cell),
+    raw_nr_cell_lock: str(d.lock_nr_cell),
+    raw_lte_cell_lock: str(d.lock_lte_cell),
     band: pccBandStr,
   }
 }
