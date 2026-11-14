@@ -656,12 +656,23 @@ struct Permit(Arc<AtomicUsize>);
 
 impl Permit {
     fn acquire(in_flight: &Arc<AtomicUsize>, limit: usize) -> Option<Self> {
-        in_flight
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                (n < limit).then_some(n + 1)
-            })
-            .ok()
-            .map(|_| Self(Arc::clone(in_flight)))
+        // A plain compare-exchange loop: `fetch_update` is deprecated on newer
+        // toolchains and its replacement is missing on older ones.
+        let mut current = in_flight.load(Ordering::Acquire);
+        loop {
+            if current >= limit {
+                return None;
+            }
+            match in_flight.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Some(Self(Arc::clone(in_flight))),
+                Err(seen) => current = seen,
+            }
+        }
     }
 }
 
