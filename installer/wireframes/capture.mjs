@@ -1,7 +1,7 @@
 import { chromium } from '@playwright/test'
 import { mkdir } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
-const destination = fileURLToPath(new URL('../../docs/images/installer-v2.4/', import.meta.url))
+const destination = fileURLToPath(new URL('../../docs/images/installer-v2.5/', import.meta.url))
 await mkdir(destination, { recursive: true })
 const browser = await chromium.launch()
 try {
@@ -29,7 +29,7 @@ try {
       *, *::before, *::after { animation: none !important; transition: none !important; }
       .wireframe-label { position: fixed; z-index: 100; top: 18px; left: 24px; right: 24px; padding: 12px; background: white; border: 1px solid #999; font: 12px system-ui; letter-spacing: .04em; }
     ` })
-    await page.evaluate(() => { const label = document.createElement('div'); label.className = 'wireframe-label'; label.textContent = 'OPEN U60 PRO · v2.4 INSTALLER WIREFRAME · SAMPLE DATA · NO MODEM CONNECTED'; document.body.appendChild(label) })
+    await page.evaluate(() => { const label = document.createElement('div'); label.className = 'wireframe-label'; label.textContent = 'OPEN U60 PRO · v2.5 INSTALLER WIREFRAME · SAMPLE DATA · NO MODEM CONNECTED'; document.body.appendChild(label) })
     if (errors.length) throw new Error(errors.join('\n'))
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)
     if (overflow) throw new Error(`${scene} has horizontal overflow`)

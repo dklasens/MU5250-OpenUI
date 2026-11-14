@@ -1,7 +1,7 @@
 {
   "name": "mu5250-installer",
   "private": true,
-  "version": "2.4.0",
+  "version": "2.5.0",
   "type": "module",
   "engines": {
     "node": "^20.19.0 || >=22.12.0"

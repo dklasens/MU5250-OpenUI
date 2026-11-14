@@ -14,7 +14,7 @@ Download from [GitHub Releases](https://github.com/dklasens/MU5250-OpenUI/releas
 | macOS 15+ · Intel | `x64.dmg` | `x86_64.app.zip` |
 | Windows x64 | `x64-setup.exe` | MSI for managed installation; portable ZIP |
 
-**v2.4 signing:** Mac packages are ad-hoc signed and not Apple-notarized. Windows
+**v2.5 signing:** Mac packages are ad-hoc signed and not Apple-notarized. Windows
 packages are unsigned. The operating system may show an unverified-publisher
 warning. Download only from the linked project release and verify its checksums.
 
@@ -115,7 +115,7 @@ retain sensitive modem configuration. Never publish these files or SSH keys.
 Package startup diagnostics launch the real WebView and execute `adb version`.
 They disable modem commands and do not perform physical deployment. UI tests and
 published wireframes use sample data. The physical v2.3 deployment evidence does
-not substitute for a v2.4 end-to-end hardware test. Dashboard/API traffic remains
+not substitute for a v2.5 installer end-to-end hardware test. Dashboard/API traffic remains
 HTTP on the LAN.
 
 ## Build and test
@@ -157,7 +157,7 @@ Do not put certificates or passwords in source or issue comments.
 
 ## Wireframes
 
-[View the v2.4 installer wireframes](../docs/INSTALLER-WIREFRAMES.md). They render
+[View the v2.5 installer wireframes](../docs/INSTALLER-WIREFRAMES.md). They render
 the actual React interface through a separate sample-only bridge, which is not
 included in the desktop bundle.
 
