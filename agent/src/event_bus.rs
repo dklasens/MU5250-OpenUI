@@ -46,20 +46,35 @@ impl EventBus {
 
     /// Spawn the listener thread. Consumes self into an Arc-compatible form.
     /// Call this after all subscriptions are registered.
+    ///
+    /// The loop is supervised: a panic (say, in dispatch) restarts it after
+    /// the usual delay instead of silently ending event delivery.
     pub fn start(self) {
-        std::thread::spawn(move || self.run_loop());
+        let spawned = std::thread::Builder::new()
+            .name("event-bus".into())
+            .spawn(move || {
+                crate::diag_log::supervise(
+                    "event_bus",
+                    std::time::Duration::from_secs(RESTART_DELAY_SECS),
+                    || self.run_loop(),
+                )
+            });
+        if let Err(e) = spawned {
+            eprintln!("[event_bus] failed to start listener thread: {e}");
+        }
     }
 
     fn run_loop(&self) {
         loop {
             match spawn_ubus_listen() {
-                Ok(mut child) => {
-                    eprintln!("[event_bus] ubus listen started (pid {})", child.id());
-                    if let Some(stdout) = child.stdout.take() {
+                Ok(child) => {
+                    // Killed and reaped on drop, including when unwinding.
+                    let mut child = Listener(child);
+                    eprintln!("[event_bus] ubus listen started (pid {})", child.0.id());
+                    if let Some(stdout) = child.0.stdout.take() {
                         self.read_events(stdout);
                     }
-                    // Process exited — reap it
-                    let _ = child.wait();
+                    drop(child);
                     eprintln!(
                         "[event_bus] ubus listen exited, restarting in {RESTART_DELAY_SECS}s"
                     );
@@ -121,6 +136,17 @@ impl EventBus {
                 }
             }
         }
+    }
+}
+
+/// A `ubus listen` child that is killed (if still running) and reaped when
+/// dropped, so a restart never leaves a stray listener or a zombie behind.
+struct Listener(Child);
+
+impl Drop for Listener {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
     }
 }
 

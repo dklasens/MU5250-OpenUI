@@ -5,10 +5,12 @@
 //! stdout/stderr are redirected into a pipe that a thread drains into a
 //! size-capped file on `/data`, which survives reboots.
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
-use std::os::fd::FromRawFd;
+use std::io::{BufRead, BufReader, ErrorKind, Write};
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::OpenOptionsExt;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::csv_utils::{device_datetime, now_secs};
 
@@ -38,15 +40,109 @@ pub fn init() {
     if !redirected {
         return;
     }
-    // The drain must never stop: a full pipe would block every eprintln!.
-    std::thread::spawn(move || drain(BufReader::new(reader), log));
+    // The drain must never stop: a full pipe would block every eprintln!, and
+    // a closed one would make every eprintln! panic on EPIPE.
+    let spawned = std::thread::Builder::new()
+        .name(DRAIN_THREAD.into())
+        .spawn(move || {
+            let mut reader = BufReader::new(reader);
+            let mut log = log;
+            loop {
+                let ended = panic::catch_unwind(AssertUnwindSafe(|| drain(&mut reader, &mut log)));
+                if ended.is_ok() {
+                    break; // EOF: nothing can write to the pipe any more.
+                }
+                // A panic while logging one line; keep draining.
+            }
+            silence_stdio();
+        });
+    if spawned.is_err() {
+        silence_stdio();
+    }
 }
 
-fn drain(reader: impl BufRead, mut log: Log) {
-    // split, not lines(): invalid UTF-8 must not end the drain.
-    for line in reader.split(b'\n') {
-        let Ok(line) = line else { break };
-        log.line(String::from_utf8_lossy(&line).trim_end());
+/// Name of the drain thread. The panic hook must not write to stderr from it:
+/// with the pipe full, the drain would block on itself.
+const DRAIN_THREAD: &str = "diag-log";
+
+/// Point stdout/stderr at /dev/null, so output is dropped rather than failing
+/// with EPIPE (which makes `eprintln!` panic) once the drain is gone.
+fn silence_stdio() {
+    if let Ok(null) = OpenOptions::new().write(true).open("/dev/null") {
+        unsafe {
+            libc::dup2(null.as_raw_fd(), 1);
+            libc::dup2(null.as_raw_fd(), 2);
+        }
+    }
+}
+
+/// Copy lines into the log until EOF. Read errors are retried, not fatal.
+fn drain(reader: &mut impl BufRead, log: &mut Log) {
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        // read_until, not lines(): invalid UTF-8 must not end the drain.
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) => return,
+            Ok(_) => log.line(String::from_utf8_lossy(&line).trim_end()),
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(_) => std::thread::sleep(Duration::from_millis(100)),
+        }
+    }
+}
+
+/// Log every panic (message, location, thread) through stderr into the log.
+/// Unwinding is unchanged: the panicking thread decides whether it recovers.
+pub fn install_panic_hook() {
+    panic::set_hook(Box::new(|info| {
+        let thread = std::thread::current();
+        let name = thread.name().unwrap_or("unnamed");
+        if name == DRAIN_THREAD {
+            return;
+        }
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "unknown location".into());
+        let line = format!(
+            "[panic] thread '{name}' panicked at {location}: {}\n",
+            panic_message(info.payload())
+        );
+        // Not eprintln!: a failing write must not panic inside the hook.
+        let _ = std::io::stderr().write_all(line.as_bytes());
+    }));
+}
+
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("non-string panic payload")
+}
+
+/// Run `f`, containing a panic. Returns `None` if it panicked; the hook has
+/// already logged the message and location. State behind `safe_lock()` is
+/// still usable afterwards (poisoning is ignored), so callers only need to
+/// leave their own invariants sane.
+pub fn contain<R>(what: &str, f: impl FnOnce() -> R) -> Option<R> {
+    match panic::catch_unwind(AssertUnwindSafe(f)) {
+        Ok(value) => Some(value),
+        Err(_) => {
+            let _ = writeln!(std::io::stderr(), "[{what}] recovered from panic");
+            None
+        }
+    }
+}
+
+/// Keep a background loop alive: run `body` and, whenever it panics or
+/// returns, run it again after `restart_delay`. Never returns.
+pub fn supervise(what: &str, restart_delay: Duration, mut body: impl FnMut()) -> ! {
+    loop {
+        if contain(what, &mut body).is_some() {
+            let _ = writeln!(std::io::stderr(), "[{what}] loop exited, restarting");
+        }
+        std::thread::sleep(restart_delay);
     }
 }
 
@@ -160,6 +256,49 @@ mod tests {
         assert_eq!(text.matches("charger control state").count(), 1);
         assert!(text.contains("previous message repeated 4 times"));
         assert!(text.ends_with("[server] listener down\n"));
+    }
+
+    #[test]
+    fn drain_survives_read_errors_and_invalid_utf8() {
+        struct Flaky {
+            chunks: Vec<std::io::Result<Vec<u8>>>,
+        }
+        impl std::io::Read for Flaky {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.chunks.is_empty() {
+                    return Ok(0);
+                }
+                let chunk = self.chunks.remove(0)?;
+                buf[..chunk.len()].copy_from_slice(&chunk);
+                Ok(chunk.len())
+            }
+        }
+        let (path, mut log) = temp_log(64 * 1024 + 1);
+        let mut reader = BufReader::new(Flaky {
+            chunks: vec![
+                Ok(b"before\n".to_vec()),
+                Err(std::io::Error::other("transient")),
+                Err(ErrorKind::Interrupted.into()),
+                Ok(b"bad \xff utf8\nafter\n".to_vec()),
+            ],
+        });
+        drain(&mut reader, &mut log);
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("before"));
+        assert!(text.contains("bad \u{fffd} utf8"));
+        assert!(text.ends_with("after\n"), "{text}");
+    }
+
+    #[test]
+    fn contain_turns_a_panic_into_none() {
+        assert_eq!(contain("test", || 7), Some(7));
+        assert_eq!(contain("test", || -> u8 { panic!("boom") }), None);
+        let payload: Box<dyn std::any::Any + Send> = Box::new(String::from("owned"));
+        assert_eq!(panic_message(payload.as_ref()), "owned");
+        let payload: Box<dyn std::any::Any + Send> = Box::new("static");
+        assert_eq!(panic_message(payload.as_ref()), "static");
+        let payload: Box<dyn std::any::Any + Send> = Box::new(5u8);
+        assert_eq!(panic_message(payload.as_ref()), "non-string panic payload");
     }
 
     #[test]

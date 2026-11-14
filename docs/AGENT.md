@@ -57,10 +57,13 @@ is a route below — `scripts/check-api-contract.py` enforces both directions
   test dropped `ureq`, and with it rustls/ring/ICU.
 - **Subprocess cost**: every `ubus`/`uci` read is a fork+exec, which dominates
   the agent's CPU (about 4–5 ms per `ubus call` on-device). `cache.rs` gives
-  each dashboard source its own TTL (signal 1 s, WAN throughput 1 s, thermal 10 s, wan/wan6 30 s, data usage 30 s, cycle dates 300 s), so
+  each dashboard source its own TTL (signal 1 s, WAN throughput 1 s, thermal 10 s, wan/wan6 29/31 s, data usage 37 s, cycle dates 300 s), so
   the client's poll rate is decoupled from the refresh rate and concurrent
   clients collapse onto one refresh. `wifi_status` dumps whole configs with
-  `ubus::uci_show` instead of issuing one `uci get` per key.
+  `ubus::uci_show` instead of issuing one `uci get` per key. The client list,
+  Wi-Fi station dump and `iw info` (5 s) and TTL status (10 s) are cached
+  briefly and invalidated by the mutations that change them; see
+  "Data sources and caching" in [ARCHITECTURE.md](../ARCHITECTURE.md).
 - **Event bus**: one `ubus listen` process dispatches to subscribers over
   bounded channels (`BSP_CHARGER_EVENT` → charge enforcer).
 - **State files** (all under `/data/local/tmp/`): `charge_limit.json`,
