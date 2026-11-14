@@ -96,7 +96,10 @@ test('a later failure keeps the last good readings marked stale', async ({ page,
   await expect(battery.getByText('78%')).toBeVisible()
   await expect(card(page, 'Battery health').getByText('Good')).toBeVisible()
 
-  await advanceHeartbeat(page, agent, 20_000, INFO)
+  // Two steps: one 20 s jump of the fake clock would outrun the client's 15 s
+  // request timeout and abort an in-flight heartbeat read.
+  await advanceHeartbeat(page, agent, 10_000, DETAIL)
+  await advanceHeartbeat(page, agent, 10_000, INFO)
   await expect(battery.getByText('Showing the last fuel gauge reading; refresh failed: ubus timeout')).toBeVisible()
   await expect(battery.getByText('Hardware')).toBeVisible()
   // Unaffected sources stay current.
