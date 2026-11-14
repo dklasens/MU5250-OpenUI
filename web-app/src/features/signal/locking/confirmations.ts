@@ -3,7 +3,7 @@
 // Nothing here reads live state or secrets.
 
 import { describeBandLock } from '../../../data/bands'
-import type { BandLockState } from '../../../types'
+import type { BandLockState, CarrierComponent, CellLockState } from '../../../types'
 import type { ConfirmOptions } from '../../../ui/feedback'
 
 export type Rat = 'nr' | 'lte'
@@ -25,6 +25,32 @@ export function describeObserved(type: Rat, state: BandLockState, supported: num
     case 'subset':
       return bandList(type, d.bands)
   }
+}
+
+const arfcnName = (t: Rat) => (t === 'nr' ? 'NR-ARFCN' : 'EARFCN')
+
+/** "PCI 431, NR-ARFCN 423410, band n1" — the same order the lock buttons and confirmation use. */
+export function formatCell(type: Rat, pci: number | string, arfcn: number | string, band?: number | string): string {
+  const b = type === 'nr' && band !== undefined && band !== '' ? `, band n${band}` : ''
+  return `PCI ${pci}, ${arfcnName(type)} ${arfcn}${b}`
+}
+
+/** Plain-language rendering of an observed cell lock. */
+export function describeCellLock(type: Rat, state: CellLockState): string {
+  switch (state.kind) {
+    case 'unknown':
+      return 'Unknown (the modem did not report it)'
+    case 'none':
+      return 'None (automatic cell selection)'
+    case 'locked':
+      return formatCell(type, state.pci, state.arfcn, state.band)
+  }
+}
+
+/** A serving carrier in the same format; its band string is already "n78" / "B8". */
+export function formatServing(type: Rat, c: CarrierComponent): string {
+  const band = c.band.replace(/\D/g, '')
+  return formatCell(type, c.pci ?? 'unavailable', c.earfcn, band || undefined) + (type === 'lte' && c.band ? `, band ${c.band}` : '')
 }
 
 /** Internet (WAN) can drop; the dashboard is served by the router and stays reachable over its LAN. */

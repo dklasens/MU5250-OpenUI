@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from 'react'
 import { useHome } from '../../app/HomeContext'
 import { api } from '../../data/api'
+import { cellLockServing } from '../../data/cellLock'
 import { useResource } from '../../data/poll'
 import type { BandLockState } from '../../types'
 import { Button } from '../../ui/controls'
@@ -171,8 +172,22 @@ export default function Locking() {
       )}
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-        <CellLock type="nr" ops={ops} onLock={lockCell} />
-        <CellLock type="lte" ops={ops} onLock={lockCell} />
+        <CellLock
+          type="nr"
+          observed={signal.nr_cell_lock_state}
+          serving={cellLockServing(signal.nr_cell_lock_state, signal.nr_carriers)}
+          ops={ops}
+          onLock={lockCell}
+          onReset={resetCells}
+        />
+        <CellLock
+          type="lte"
+          observed={signal.lte_cell_lock_state}
+          serving={cellLockServing(signal.lte_cell_lock_state, signal.lte_carriers)}
+          ops={ops}
+          onLock={lockCell}
+          onReset={resetCells}
+        />
       </div>
 
       <Card title="Reset locks">
@@ -202,6 +217,12 @@ export default function Locking() {
           </p>
           <p>
             NR SA lock (parsed): <span className="text-ink">{describeLockState(signal.nr_sa_band_lock_state)}</span>
+          </p>
+          <p>
+            NR cell lock (raw): <span className="text-ink">{signal.raw_nr_cell_lock === undefined ? '(not reported)' : signal.raw_nr_cell_lock || '(empty)'}</span>
+          </p>
+          <p>
+            LTE cell lock (raw): <span className="text-ink">{signal.raw_lte_cell_lock === undefined ? '(not reported)' : signal.raw_lte_cell_lock || '(empty)'}</span>
           </p>
           <p>
             Network mode: <span className="text-ink">{signal.net_select || '(unknown)'}</span>

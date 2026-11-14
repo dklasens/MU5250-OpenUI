@@ -322,3 +322,69 @@ test.describe('serving cells', () => {
   })
 })
 
+
+test.describe('cell lock state', () => {
+  const card = (page: Page, rat: 'NR' | 'LTE') =>
+    page.locator('section', { has: page.getByRole('heading', { name: `${rat} cell lock`, exact: true }) })
+
+  test('a lock on the serving cell is shown with its cell and "on the locked cell"', async ({ page, agent }) => {
+    // SA fixture serves NR PCI 745, NR-ARFCN 643392, n78. Serving values arrive as strings here.
+    agent.on('GET', '/api/dashboard', {
+      data: fx.dashboard({ network: 'SA', signal: { lock_nr_cell: '745,643392,78', lock_lte_cell: '0,0', nr5g_pci: '745', nr5g_action_channel: '643392' } }),
+    })
+    await openLocking(page)
+    const nr = card(page, 'NR')
+    await expect(nr.getByText('Current lock:')).toContainText('PCI 745, NR-ARFCN 643392, band n78')
+    await expect(nr).toContainText('The modem is on the locked cell')
+    await expect(nr.getByRole('status')).toHaveCount(0)
+    await expect(card(page, 'LTE').getByText('Current lock:')).toContainText('None (automatic cell selection)')
+    await expect(page.getByText('NR cell lock (raw):')).toContainText('745,643392,78')
+  })
+
+  test('a lock on another cell warns plainly; its Reset confirms, and the next read shows no lock', async ({ page, agent }) => {
+    let locks = { lock_nr_cell: '431,423410,1', lock_lte_cell: '312,3650' }
+    agent.on('GET', '/api/dashboard', () => ({ data: fx.dashboard({ network: 'SA', signal: locks }) }))
+    agent.on('POST', '/api/cell/lock/reset', () => {
+      locks = { lock_nr_cell: '0,0,0', lock_lte_cell: '0,0' } // the device's reset spelling
+      return { data: {} }
+    })
+    await openLocking(page)
+
+    const nr = card(page, 'NR')
+    await expect(nr.getByText('Current lock:')).toContainText('PCI 431, NR-ARFCN 423410, band n1')
+    const warning = nr.getByRole('status').filter({ hasText: 'not on the locked cell' })
+    await expect(warning).toContainText('serving NR cell: PCI 745, NR-ARFCN 643392, band n78')
+    await expect(warning).toContainText('usually means no mobile service')
+    // SA: no LTE carrier is serving, so an LTE lock is not in use either.
+    const lte = card(page, 'LTE')
+    await expect(lte.getByText('Current lock:')).toContainText('PCI 312, EARFCN 3650')
+    await expect(lte.getByRole('status')).toContainText('reports no serving LTE cell')
+
+    await warning.getByRole('button', { name: 'Reset cell locks' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Reset cell locks to automatic?' })
+    await dialog.getByRole('button', { name: 'Cancel' }).click()
+    expect(agent.mutations()).toEqual([])
+    // Nothing optimistic: the lock is still shown until the device says otherwise.
+    await expect(nr.getByText('Current lock:')).toContainText('PCI 431')
+
+    await warning.getByRole('button', { name: 'Reset cell locks' }).click()
+    await page.getByRole('dialog').getByRole('button', { name: 'Reset cells' }).click()
+    await expect.poll(() => agent.mutations().length).toBe(1)
+    expect(agent.mutations()[0].path).toBe('/api/cell/lock/reset')
+    await expect(nr.getByText('Current lock:')).toContainText('None (automatic cell selection)')
+    await expect(lte.getByText('Current lock:')).toContainText('None (automatic cell selection)')
+    await expect(page.getByText(/not on the locked cell/)).toHaveCount(0)
+  })
+
+  test('missing or malformed lock fields read unknown, not unlocked', async ({ page, agent }) => {
+    agent.on('GET', '/api/dashboard', {
+      data: fx.dashboard({ network: 'SA', signal: { lock_nr_cell: null, lock_lte_cell: '312,abc' } }),
+    })
+    await openLocking(page)
+    for (const rat of ['NR', 'LTE'] as const) {
+      await expect(card(page, rat).getByText('Current lock:')).toContainText('Unknown (the modem did not report it)')
+      await expect(card(page, rat)).not.toContainText('locked cell')
+    }
+    await expect(page.getByText('NR cell lock (raw):')).toContainText('(not reported)')
+  })
+})

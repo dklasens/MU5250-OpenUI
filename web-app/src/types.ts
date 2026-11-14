@@ -26,6 +26,16 @@ export type BandLockState =
   | { kind: 'automatic' }
   | { kind: 'locked'; bands: number[] }
 
+/**
+ * Observed cell-lock state for one RAT. `unknown` (field missing or malformed) is
+ * not `none` (the firmware reports no lock: empty or all zeros); `locked` carries
+ * the cell the modem is restricted to. `band` is the NR band number (NR only).
+ */
+export type CellLockState =
+  | { kind: 'unknown' }
+  | { kind: 'none' }
+  | { kind: 'locked'; pci: number; arfcn: number; band?: number }
+
 /** The carrier Home/Signal should treat as the serving cell, picked from validated carriers. */
 export interface PrimaryCarrier {
   rat: 'lte' | 'nr'
@@ -57,6 +67,12 @@ export interface SignalInfo {
   raw_nr_band_lock?: string
   raw_nr_sa_band_lock?: string
   raw_nr_nsa_band_lock?: string
+  /** From `lock_nr_cell` ("pci,nr-arfcn,band"). */
+  nr_cell_lock_state: CellLockState
+  /** From `lock_lte_cell` ("pci,earfcn"). */
+  lte_cell_lock_state: CellLockState
+  raw_nr_cell_lock?: string
+  raw_lte_cell_lock?: string
   band?: string
 }
 
