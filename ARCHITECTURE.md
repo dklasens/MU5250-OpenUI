@@ -235,9 +235,11 @@ and `ttl/clear` drop the TTL status. Full thermal zones (sysfs) and USB status
     and legends derive from it. `bands.ts`, `usage.ts`, `dates.ts`,
     `wifiWidth.ts` and `validate.ts` are pure mappers and validators.
     Unknown firmware values map to `null`/unknown, not to a default.
-- **Heartbeat:** `HomeProvider` polls `/api/dashboard` every 3 s on Home
-  and Signal, and every 15 s elsewhere, where it only feeds the alert banner.
-  It stays the one heartbeat: Home, Signal and Modem → Data all read it;
+- **Heartbeat:** `HomeProvider` polls `/api/dashboard` every 3 s on Home,
+  Signal and System → Metrics (a mounted screen opts in with
+  `useFastHeartbeat`), and every 15 s elsewhere, where it only feeds the alert
+  banner. It stays the one heartbeat: Home, Signal, Modem → Data and the
+  Metrics CPU and memory cards all read it;
   nothing re-polls the same data. Other resources are owned by the screen
   that shows them (`usePoll`/`useResource`); expensive views (clients,
   process list) poll slowly or load on demand.

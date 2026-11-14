@@ -109,8 +109,8 @@ Matching is exact on method and path; the query string is available as
 
 ### Controlled time
 
-The heartbeat is a `setTimeout` chain: 3 s on Home and Signal, 15 s on the other
-groups, re-armed only after each response. To test it without sleeping:
+The heartbeat is a `setTimeout` chain: 3 s on Home, Signal and System → Metrics,
+15 s elsewhere, re-armed only after each response. To test it without sleeping:
 
 ```ts
 await openApp(page, { clock: true })            // fake clock installed before navigation

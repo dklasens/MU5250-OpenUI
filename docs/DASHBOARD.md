@@ -51,8 +51,9 @@ web-app/src/
 ## Conventions that keep the device happy
 
 - Home is one batched request (`/api/dashboard`), not nine calls. It is the
-  only heartbeat: every 3 s on Home and Signal, every 15 s elsewhere (where it
-  only feeds the alert banner). Nothing re-polls data it already carries.
+  only heartbeat: every 3 s on Home, Signal and System → Metrics (which reads
+  CPU and memory from it via `useFastHeartbeat`), every 15 s elsewhere (where
+  it only feeds the alert banner). Nothing re-polls data it already carries.
 - Pollers never overlap (next poll scheduled after the previous completes)
   and pause while the browser tab is hidden.
 - Expensive endpoints (`/api/network/clients`, `/api/system/top`) poll
